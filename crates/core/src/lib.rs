@@ -274,7 +274,7 @@ impl SpaceThumbnailsRenderer {
         self.destroy_opened_asset();
 
         let binary = matches!(Path::new(filename).extension(), Some(e) if e == "glb");
-        let requires_jit_materials = gltf_uses_extension(data, binary, "KHR_materials_sheen");
+        let requires_jit_materials = gltf_has_non_opaque_sheen_material(data, binary);
 
         // Current Filament gltfio handles EXT_meshopt_compression directly.
         let load_as_binary = binary;
@@ -309,12 +309,17 @@ impl SpaceThumbnailsRenderer {
         let filepath_str = filepath.and_then(|p| p.to_str().map(|s| s.to_owned()));
 
         unsafe {
-            // The precompiled archive contains Sheen only for opaque blending
-            // (e.g. sheen + BLEND is missing); on a miss gltfio falls back to
-            // the default material but still writes sheen uniforms onto it and
+            // The precompiled archive's Sheen variant is opaque-only
+            // (gltfio/materials/sheen.mat.in hardcodes `blending: opaque`),
+            // and UbershaderProvider::prepareConfig disables Sheen on
+            // conflict with volume/transmission/clearcoat but NOT on a
+            // blend-mode conflict. So sheen + MASK/BLEND falls back to the
+            // default material yet still writes sheen uniforms onto it and
             // aborts ("uniform named sheenColorIndex not found",
-            // SheenWoodLeatherSofa reproduces this). Use JIT only when needed
-            // so ordinary thumbnails retain the much faster ubershader path.
+            // SheenWoodLeatherSofa reproduces this). Use JIT only for that
+            // specific combination so ordinary thumbnails (including opaque
+            // sheen, which the archive already covers) keep the much faster
+            // ubershader path.
             let materials = if requires_jit_materials {
                 MaterialProvider::create_material_generator(&mut self.engine, false)?
             } else {
@@ -505,7 +510,10 @@ fn is_base64_data_uri(uri: &str) -> bool {
     uri.starts_with("data:") && uri.find(";base64,").is_some()
 }
 
-fn gltf_uses_extension(data: &[u8], binary: bool, extension: &str) -> bool {
+/// True if any material combines KHR_materials_sheen with a non-opaque
+/// alphaMode (BLEND or MASK) — the specific combination the precompiled
+/// ubershader archive cannot render (see the call site for why).
+fn gltf_has_non_opaque_sheen_material(data: &[u8], binary: bool) -> bool {
     let json = if binary {
         match extract_glb_json_chunk(data) {
             Some(json) => json,
@@ -515,16 +523,30 @@ fn gltf_uses_extension(data: &[u8], binary: bool, extension: &str) -> bool {
         data
     };
 
-    serde_json::from_slice::<serde_json::Value>(json)
-        .ok()
-        .and_then(|root| root.get("extensionsUsed").cloned())
-        .and_then(|extensions| extensions.as_array().cloned())
-        .map(|extensions| {
-            extensions
-                .iter()
-                .any(|value| value.as_str() == Some(extension))
-        })
-        .unwrap_or(false)
+    let root: serde_json::Value = match serde_json::from_slice(json) {
+        Ok(root) => root,
+        Err(_) => return false,
+    };
+
+    let materials = match root.get("materials").and_then(|m| m.as_array()) {
+        Some(materials) => materials,
+        None => return false,
+    };
+
+    materials.iter().any(|material| {
+        let has_sheen = material
+            .get("extensions")
+            .and_then(|extensions| extensions.get("KHR_materials_sheen"))
+            .is_some();
+        if !has_sheen {
+            return false;
+        }
+        // alphaMode defaults to OPAQUE per the glTF spec when absent
+        matches!(
+            material.get("alphaMode").and_then(|m| m.as_str()),
+            Some("BLEND") | Some("MASK")
+        )
+    })
 }
 
 enum SanitizedGltf {

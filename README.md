@@ -78,3 +78,5 @@ This fork includes a few additional improvements:
 
 - Improved rendering performance when processing many files.
 - Fixed crashes encountered while rendering glTF/GLB files.
+- Fixed rendering errors encountered in FBX files.
+- Fixed empty thumbnails being generated for DAE files.

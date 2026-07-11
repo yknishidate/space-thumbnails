@@ -4,7 +4,7 @@ version = "1.0.1"
 edition = "2021"
 
 [dependencies]
-filament-bindings = "0.2.2"
+filament-bindings = { path = "../filament-bindings" }
 log = "0.4"
 serde_json = "1"
 base64 = "0.22"

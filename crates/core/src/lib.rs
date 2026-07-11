@@ -10,9 +10,8 @@ use filament_bindings::{
     assimp::{post_process, AssimpAsset},
     backend::{Backend, PixelBufferDescriptor, PixelDataFormat, PixelDataType},
     filament::{
-        self, sRGBColor, Aabb, Camera, ClearOptions, Engine, Fov, IndirectLight,
-        IndirectLightBuilder, LightBuilder, Projection, Renderer, Scene, SwapChain,
-        SwapChainConfig, Texture, View, Viewport,
+        self, sRGBColor, Aabb, Camera, ClearOptions, Engine, IndirectLight, IndirectLightBuilder,
+        LightBuilder, Renderer, Scene, SwapChain, SwapChainConfig, Texture, View, Viewport,
     },
     glftio::{
         AssetConfiguration, AssetLoader, MaterialProvider, ResourceConfiguration, ResourceLoader,
@@ -176,7 +175,13 @@ impl SpaceThumbnailsRenderer {
         } else {
             let start = Instant::now();
             let asset =
-                AssimpAsset::from_file_with_flags(&mut self.engine, filepath, ASSIMP_FLAGS).ok()?;
+                match AssimpAsset::from_file_with_flags(&mut self.engine, filepath, ASSIMP_FLAGS) {
+                    Ok(asset) => asset,
+                    Err(error) => {
+                        log::warn!(target: PERF_TARGET, "assimp import failed: {error}");
+                        return None;
+                    }
+                };
             info!(target: PERF_TARGET, "assimp import from file: {:.2?}", start.elapsed());
             self.load_assimp_asset(asset)
         }
@@ -192,13 +197,21 @@ impl SpaceThumbnailsRenderer {
             self.load_gltf_asset(buffer, filename.as_ref(), None)
         } else {
             let start = Instant::now();
-            let asset = AssimpAsset::from_memory_with_flags(
+            let format_hint = Path::new(filename.as_ref())
+                .extension()
+                .and_then(OsStr::to_str)?;
+            let asset = match AssimpAsset::from_memory_with_flags(
                 &mut self.engine,
                 buffer,
-                filename.as_ref().to_str()?,
+                format_hint,
                 ASSIMP_FLAGS,
-            )
-            .ok()?;
+            ) {
+                Ok(asset) => asset,
+                Err(error) => {
+                    log::warn!(target: PERF_TARGET, "assimp memory import failed ({format_hint}): {error}");
+                    return None;
+                }
+            };
             info!(target: PERF_TARGET, "assimp import from memory: {:.2?}", start.elapsed());
             self.load_assimp_asset(asset)
         }
@@ -210,6 +223,12 @@ impl SpaceThumbnailsRenderer {
 
         unsafe {
             let aabb = asset.get_aabb();
+            info!(
+                target: PERF_TARGET,
+                "assimp bounds: min={:?}, max={:?}",
+                aabb.min.vec,
+                aabb.max.vec
+            );
             let transform = fit_into_unit_cube(aabb);
 
             let mut transform_manager = self.engine.get_transform_manager()?;
@@ -228,39 +247,10 @@ impl SpaceThumbnailsRenderer {
 
             camera.set_exposure_physical(16.0, 1.0 / 125.0, 100.0);
 
-            if let Some(camera_info) = asset.get_main_camera() {
-                let aspect = self.viewport.width as f64 / self.viewport.height as f64;
-                if camera_info.horizontal_fov != 0.0 {
-                    camera.set_projection_fov_direction(
-                        camera_info.horizontal_fov,
-                        aspect,
-                        0.1,
-                        f64::INFINITY,
-                        Fov::HORIZONTAL,
-                    );
-                } else {
-                    camera.set_projection(
-                        Projection::ORTHO,
-                        -camera_info.orthographic_width,
-                        camera_info.orthographic_width,
-                        -camera_info.orthographic_width / aspect,
-                        camera_info.orthographic_width / aspect,
-                        0.1,
-                        100000.0,
-                    );
-                }
-                transform_manager.set_transform_float(
-                    &transform_manager.get_instance(&self.camera_entity).unwrap(),
-                    &(transform
-                        * Mat4f::look_at(
-                            &camera_info.position,
-                            &camera_info.look_at,
-                            &camera_info.up,
-                        )),
-                )
-            } else {
-                setup_camera_surround_view(&mut camera, &aabb.transform(transform), &self.viewport);
-            }
+            // Source files often contain authoring cameras that point away
+            // from the model or frame only part of it. Thumbnails should
+            // consistently frame the complete imported bounds instead.
+            setup_camera_surround_view(&mut camera, &aabb.transform(transform), &self.viewport);
 
             self.destroy_asset = Some(Box::new(move |engine, scene| {
                 scene.remove_entities(asset.get_renderables());

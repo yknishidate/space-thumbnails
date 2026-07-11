@@ -1,0 +1,32 @@
+[package]
+name = "russimp-sys-static"
+version = "1.0.1"
+authors = ["EYHN"]
+edition = "2018"
+license-file = "LICENSE"
+readme = "README.md"
+homepage = "https://github.com/EYHN/russimp-sys"
+categories = ["rendering", "external-ffi-bindings", "game-engines", "multimedia"]
+keywords = ["assimp", "3d", "blend", "3ds", "glTF"]
+repository = "https://github.com/EYHN/russimp-sys"
+description = "Raw Assimp bindings for rust"
+exclude = ["/assimp"]
+
+[lib]
+name = "russimp_sys"
+path = "src/lib.rs"
+
+[features]
+default = ["static-link"]
+prebuilt = ["static-link"]
+static-link = []
+nozlib = []
+nolibcxx = []
+
+[build-dependencies]
+ureq = "2.4"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tar = "0.4"
+flate2 = "1.0"
+num_cpus = "1.13"

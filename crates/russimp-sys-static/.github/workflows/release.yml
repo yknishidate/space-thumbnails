@@ -1,0 +1,93 @@
+name: Build Release
+on:
+  push:
+    tags:
+      - v*
+jobs:
+  create-release:
+    runs-on: 'ubuntu-20.04'
+    outputs:
+      upload_url: ${{ steps.create-release.outputs.upload_url }}
+    steps:
+      - name: Create Release
+        id: create-release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          omitBody: true
+          prerelease: true
+          draft: true
+          token: ${{ secrets.ACCESS_TOKEN }}
+  build:
+    runs-on: ${{ matrix.target.os }}
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: ubuntu-20.04
+            triple: x86_64-unknown-linux-gnu
+            rustflags: ''
+          - os: macos-11
+            triple: x86_64-apple-darwin
+            rustflags: ''
+          - os: macos-11
+            triple: aarch64-apple-darwin
+            rustflags: ''
+          - os: windows-2019
+            triple: x86_64-pc-windows-msvc
+            rustflags: '-C target-feature=+crt-static'
+          - os: windows-2019
+            triple: x86_64-pc-windows-msvc
+            rustflags: '-C target-feature=-crt-static'
+        features: ['static-link', 'static-link,nozlib']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          submodules: true
+      - name: Install rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install ninja-build
+          df -h
+      - name: Install LLVM (Windows) # required for bindgen to work, see https://github.com/rust-lang/rust-bindgen/issues/1797
+        uses: KyleMayes/install-llvm-action@v1
+        if: runner.os == 'Windows'
+        with:
+          version: '11.0'
+          directory: ${{ runner.temp }}/llvm
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja
+      - name: Install Rust target ${{ matrix.target.triple }}
+        run: |
+          rustup target add ${{ matrix.target.triple }}
+      - name: Build ${{ matrix.target.triple }}
+        env:
+          RUSSIMP_BUILD_CACHE_DIR: ${{ runner.temp }}/release
+          RUSSIMP_BUILD_OUT_DIR: ${{ runner.temp }}/out
+          RUSSIMP_PREBUILT: OFF
+          RUSTFLAGS: ${{ matrix.target.rustflags }}
+        run: |
+          cargo build -vv --release --no-default-features --features ${{ matrix.features }} --target ${{ matrix.target.triple }}
+        shell: bash
+      - name: Upload release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          artifacts: ${{ runner.temp }}/release/*
+          artifactContentType: application/gzip
+          artifactErrorsFailBuild: true
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true
+          prerelease: true
+          draft: true
+          token: ${{ secrets.ACCESS_TOKEN }}

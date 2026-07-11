@@ -169,7 +169,10 @@ impl Camera {
 
     #[inline]
     pub unsafe fn get_projection_matrix(&self) -> Mat4 {
-        Mat4::from_native(bindgen::filament_Camera_getProjectionMatrix(self.native(), 0))
+        Mat4::from_native(bindgen::filament_Camera_getProjectionMatrix(
+            self.native(),
+            0,
+        ))
     }
 
     #[inline]
@@ -213,7 +216,10 @@ impl Camera {
     pub unsafe fn look_at(&mut self, eye: &Float3, center: &Float3) {
         let up = Float3::from([0.0, 1.0, 0.0]);
         bindgen::helper_filament_camera_look_at(
-            self.native_mut(), eye.native_ptr(), center.native_ptr(), up.native_ptr(),
+            self.native_mut(),
+            eye.native_ptr(),
+            center.native_ptr(),
+            up.native_ptr(),
         )
     }
 

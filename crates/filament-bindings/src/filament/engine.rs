@@ -37,7 +37,8 @@ impl Engine {
     #[inline]
     pub unsafe fn create(backend: Backend) -> Option<Engine> {
         Self::try_from_native(bindgen::helper_filament_engine_create(
-            backend.into(), ptr::null_mut(),
+            backend.into(),
+            ptr::null_mut(),
         ))
     }
 
@@ -47,7 +48,8 @@ impl Engine {
         shared_gl_context: *mut core::ffi::c_void,
     ) -> Option<Engine> {
         Self::try_from_native(bindgen::helper_filament_engine_create(
-            backend.into(), shared_gl_context,
+            backend.into(),
+            shared_gl_context,
         ))
     }
 

@@ -36,7 +36,11 @@ impl TextureSampler {
         params.set_compareFunc(compare_func.into());
         params.set_padding1(padding1);
         params.set_padding2(padding2);
-        Self { native: bindgen::filament_TextureSampler { mSamplerParams: params } }
+        Self {
+            native: bindgen::filament_TextureSampler {
+                mSamplerParams: params,
+            },
+        }
     }
 
     #[inline]

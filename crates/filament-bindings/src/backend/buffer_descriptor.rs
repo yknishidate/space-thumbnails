@@ -69,7 +69,6 @@ impl<T: 'static> BufferDescriptor<T> {
             mUser: user as *mut _,
             mHandler: ptr::null_mut(),
         };
-        std::mem::forget(self.data);
         desc
     }
 }

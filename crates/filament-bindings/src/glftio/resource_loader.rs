@@ -63,9 +63,9 @@ impl ResourceLoader {
             normalizeSkinningWeights: config.normalize_skinning_weights,
         };
 
-        let mut loader = ResourceLoader::try_from_native(bindgen::helper_gltfio_resource_loader_create(
-            &native_config,
-        ))?;
+        let mut loader = ResourceLoader::try_from_native(
+            bindgen::helper_gltfio_resource_loader_create(&native_config),
+        )?;
 
         loader.stb_provider = ptr::NonNull::new(bindgen::helper_gltfio_create_stb_provider(
             config.engine.native_mut(),
@@ -79,18 +79,24 @@ impl ResourceLoader {
         if let Some(provider) = loader.stb_provider {
             for mime in [b"image/png\0".as_ptr(), b"image/jpeg\0".as_ptr()] {
                 bindgen::filament_gltfio_ResourceLoader_addTextureProvider(
-                    loader.native_mut(), mime.cast(), provider.as_ptr(),
+                    loader.native_mut(),
+                    mime.cast(),
+                    provider.as_ptr(),
                 );
             }
         }
         if let Some(provider) = loader.ktx2_provider {
             bindgen::filament_gltfio_ResourceLoader_addTextureProvider(
-                loader.native_mut(), b"image/ktx2\0".as_ptr().cast(), provider.as_ptr(),
+                loader.native_mut(),
+                b"image/ktx2\0".as_ptr().cast(),
+                provider.as_ptr(),
             );
         }
         if let Some(provider) = loader.webp_provider {
             bindgen::filament_gltfio_ResourceLoader_addTextureProvider(
-                loader.native_mut(), b"image/webp\0".as_ptr().cast(), provider.as_ptr(),
+                loader.native_mut(),
+                b"image/webp\0".as_ptr().cast(),
+                provider.as_ptr(),
             );
         }
         Some(loader)

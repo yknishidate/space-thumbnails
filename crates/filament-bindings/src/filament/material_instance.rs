@@ -6,7 +6,7 @@ use crate::{
     math::{self, Float3, Float4},
 };
 
-use super::{Material, RgbType, RgbaType, Texture, TextureSampler, TransparencyMode};
+use super::{Material, RgbType, RgbaType, TransparencyMode};
 
 macro_rules! impl_set_parameter_method {
     ($t:ident, $helper:ident, $value_type:ty) => {

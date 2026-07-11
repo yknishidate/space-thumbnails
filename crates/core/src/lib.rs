@@ -274,8 +274,7 @@ impl SpaceThumbnailsRenderer {
         self.destroy_opened_asset();
 
         let binary = matches!(Path::new(filename).extension(), Some(e) if e == "glb");
-        let requires_jit_materials =
-            gltf_uses_extension(data, binary, "KHR_materials_sheen");
+        let requires_jit_materials = gltf_uses_extension(data, binary, "KHR_materials_sheen");
 
         // Current Filament gltfio handles EXT_meshopt_compression directly.
         let load_as_binary = binary;
@@ -310,9 +309,12 @@ impl SpaceThumbnailsRenderer {
         let filepath_str = filepath.and_then(|p| p.to_str().map(|s| s.to_owned()));
 
         unsafe {
-            // The precompiled archive does not contain every valid Sheen
-            // combination. Use JIT only when needed so ordinary thumbnails
-            // retain the much faster ubershader path.
+            // The precompiled archive contains Sheen only for opaque blending
+            // (e.g. sheen + BLEND is missing); on a miss gltfio falls back to
+            // the default material but still writes sheen uniforms onto it and
+            // aborts ("uniform named sheenColorIndex not found",
+            // SheenWoodLeatherSofa reproduces this). Use JIT only when needed
+            // so ordinary thumbnails retain the much faster ubershader path.
             let materials = if requires_jit_materials {
                 MaterialProvider::create_material_generator(&mut self.engine, false)?
             } else {
@@ -517,7 +519,11 @@ fn gltf_uses_extension(data: &[u8], binary: bool, extension: &str) -> bool {
         .ok()
         .and_then(|root| root.get("extensionsUsed").cloned())
         .and_then(|extensions| extensions.as_array().cloned())
-        .map(|extensions| extensions.iter().any(|value| value.as_str() == Some(extension)))
+        .map(|extensions| {
+            extensions
+                .iter()
+                .any(|value| value.as_str() == Some(extension))
+        })
         .unwrap_or(false)
 }
 

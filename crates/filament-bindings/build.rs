@@ -1,7 +1,10 @@
 mod build_support;
 
 use std::{
-    env, fs, io,
+    collections::hash_map::DefaultHasher,
+    env, fs,
+    hash::{Hash, Hasher},
+    io,
     path::{Path, PathBuf},
     process::Command,
     time::SystemTime,
@@ -10,6 +13,54 @@ use std::{
 use build_support::{download, run_command, static_lib_filename, Target};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use serde::{Deserialize, Serialize};
+
+const NATIVE_CACHE_VERSION: u32 = 1;
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn git_source_revision(source_dir: &Path) -> String {
+    let output = Command::new("git")
+        .current_dir(source_dir)
+        .args(["status", "--porcelain=v1", "--untracked-files=all"])
+        .output();
+    let status = output
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| output.stdout)
+        .unwrap_or_default();
+
+    let head = Command::new("git")
+        .current_dir(source_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .unwrap_or_else(|| "unknown".to_owned());
+
+    // A dirty Filament checkout is deliberately not cached. The status output
+    // does not contain file contents, so reusing it could hide a source edit.
+    if status.is_empty() {
+        head
+    } else {
+        format!(
+            "{head}-dirty-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )
+    }
+}
+
+fn cache_matches(stamp: &Path, key: &str, required: &[PathBuf]) -> bool {
+    fs::read_to_string(stamp).is_ok_and(|stored| stored == key)
+        && required.iter().all(|path| path.is_file() || path.is_dir())
+}
 
 fn build_from_source(target: Target, crt_static: bool) -> BuildManifest {
     let filament_source_dir = env::current_dir().unwrap().join("filament");
@@ -34,91 +85,6 @@ fn build_from_source(target: Target, crt_static: bool) -> BuildManifest {
     let filament_build_dir = out_dir.join("filament");
     let filament_install_dir = filament_build_dir.join("out");
     fs::create_dir_all(&library_out_dir).unwrap();
-
-    // configure filament
-    fs::create_dir_all(&filament_build_dir).unwrap();
-    let mut filament_cmake = Command::new("cmake");
-    filament_cmake
-        .current_dir(&filament_build_dir)
-        .arg(filament_source_dir.to_str().unwrap())
-        .arg(format!("-DCMAKE_BUILD_TYPE={}", "Release"))
-        .arg(format!("-DFILAMENT_SKIP_SAMPLES={}", "ON"))
-        .arg(format!("-DFILAMENT_SKIP_SDL2={}", "ON"))
-        .arg(format!("-DUSE_STATIC_LIBCXX={}", "OFF"))
-        .arg(format!("-DFILAMENT_SUPPORTS_VULKAN={}", "ON"))
-        .arg(format!("-DFILAMENT_SUPPORTS_WEBP_TEXTURES={}", "ON"))
-        .arg(format!(
-            "-DCMAKE_INSTALL_PREFIX={}",
-            filament_install_dir.to_str().unwrap()
-        ))
-        .arg(format!("-DDIST_DIR={}", &target.to_string()));
-
-    let mut compiler_flags = String::new();
-    let c_flags = env::var("CFLAGS").unwrap_or_default();
-    let mut cxx_flags = env::var("CXXFLAGS").unwrap_or_default();
-    let asm_flags = env::var("ASMFLAGS").unwrap_or_default();
-
-    compiler_flags += " -DSTB_IMAGE_STATIC -DSTB_IMAGE_IMPLEMENTATION";
-
-    if cfg!(not(target_os = "windows")) {
-        // if not windows,  use ninja and clang
-        if crt_static {
-            panic!("Only windows support crt-static")
-        }
-
-        filament_cmake.env(
-            "CMAKE_GENERATOR",
-            env::var("CMAKE_GENERATOR").unwrap_or("Ninja".to_string()),
-        );
-
-        if cfg!(target_os = "linux") {
-            filament_cmake.env("CC", env::var("CC").unwrap_or("clang".to_string()));
-            filament_cmake.env("CXX", env::var("CXX").unwrap_or("clang++".to_string()));
-            filament_cmake.env("ASM", env::var("ASM").unwrap_or("clang".to_string()));
-            cxx_flags += " -stdlib=libc++";
-        }
-    } else {
-        // if windows
-        if target.abi == Some("gnu".to_owned()) {
-            panic!("MinGW is not supported");
-        }
-
-        filament_cmake.arg(format!(
-            "-DUSE_STATIC_CRT={}",
-            if crt_static { "ON" } else { "OFF" }
-        ));
-
-        match target.architecture.as_str() {
-            "x86_64" => filament_cmake.args(["-A", "x64"]),
-            "i686" => filament_cmake.args(["-A", "Win32"]),
-            _ => panic!("Unsupported architecture"),
-        };
-    }
-
-    filament_cmake.env("CFLAGS", format!("{} {}", compiler_flags, c_flags));
-    filament_cmake.env("CXXFLAGS", format!("{} {}", compiler_flags, cxx_flags));
-    filament_cmake.env("ASMFLAGS", format!("{} {}", compiler_flags, asm_flags));
-
-    run_command(&mut filament_cmake, "cmake");
-
-    // build filament
-    let mut filament_cmake_install = Command::new("cmake");
-    filament_cmake_install
-        .current_dir(&filament_build_dir)
-        .args(["--build", "."])
-        .args(["--target", "install"])
-        .args(["--config", "Release"]);
-    filament_cmake_install.args([
-        "--parallel",
-        &env::var("NUM_JOBS").unwrap_or(num_cpus::get().to_string()),
-    ]);
-
-    run_command(&mut filament_cmake_install, "cmake");
-
-    let filament_native_lib = filament_install_dir.join("lib").join(&target.to_string());
-
-    let filament_license = filament_install_dir.join("LICENSE");
-    let filament_include = filament_install_dir.join("include");
 
     let mut filament_link_libs: Vec<String> = vec![
         "filament",
@@ -151,51 +117,163 @@ fn build_from_source(target: Target, crt_static: bool) -> BuildManifest {
         "webpdecoder",
     ]
     .into_iter()
-    .map(|v| v.to_string())
+    .map(str::to_owned)
     .collect();
 
-    for lib in filament_link_libs.iter() {
-        let source = if lib == "webpdecoder" {
-            let filename = if cfg!(target_os = "windows") {
-                "libwebpdecoder.lib".to_owned()
-            } else {
-                static_lib_filename(lib)
-            };
-            filament_install_dir.join("lib").join(filename)
+    let filament_license = filament_install_dir.join("LICENSE");
+    let filament_include = filament_install_dir.join("include");
+    let native_stamp = out_dir.join("filament-native.stamp");
+    let native_key = format!(
+        "v{NATIVE_CACHE_VERSION};source={};target={};crt={crt_static};cflags={};cxxflags={};asmflags={};webp=on;vulkan=on",
+        git_source_revision(&filament_source_dir),
+        target,
+        env::var("CFLAGS").unwrap_or_default(),
+        env::var("CXXFLAGS").unwrap_or_default(),
+        env::var("ASMFLAGS").unwrap_or_default(),
+    );
+    let mut required_native = filament_link_libs
+        .iter()
+        .map(|lib| library_out_dir.join(static_lib_filename(lib)))
+        .collect::<Vec<_>>();
+    required_native.extend([filament_license.clone(), filament_include.clone()]);
+    let rebuild_filament = !cache_matches(&native_stamp, &native_key, &required_native);
+
+    if rebuild_filament {
+        // Configure and build Filament only when its source or native settings changed.
+        fs::create_dir_all(&filament_build_dir).unwrap();
+        let mut filament_cmake = Command::new("cmake");
+        filament_cmake
+            .current_dir(&filament_build_dir)
+            .arg(filament_source_dir.to_str().unwrap())
+            .arg(format!("-DCMAKE_BUILD_TYPE={}", "Release"))
+            .arg(format!("-DFILAMENT_SKIP_SAMPLES={}", "ON"))
+            .arg(format!("-DFILAMENT_SKIP_SDL2={}", "ON"))
+            .arg(format!("-DUSE_STATIC_LIBCXX={}", "OFF"))
+            .arg(format!("-DFILAMENT_SUPPORTS_VULKAN={}", "ON"))
+            .arg(format!("-DFILAMENT_SUPPORTS_WEBP_TEXTURES={}", "ON"))
+            .arg(format!(
+                "-DCMAKE_INSTALL_PREFIX={}",
+                filament_install_dir.to_str().unwrap()
+            ))
+            .arg(format!("-DDIST_DIR={}", &target.to_string()));
+
+        let mut compiler_flags = String::new();
+        let c_flags = env::var("CFLAGS").unwrap_or_default();
+        let mut cxx_flags = env::var("CXXFLAGS").unwrap_or_default();
+        let asm_flags = env::var("ASMFLAGS").unwrap_or_default();
+
+        compiler_flags += " -DSTB_IMAGE_STATIC -DSTB_IMAGE_IMPLEMENTATION";
+
+        if cfg!(not(target_os = "windows")) {
+            // if not windows,  use ninja and clang
+            if crt_static {
+                panic!("Only windows support crt-static")
+            }
+
+            filament_cmake.env(
+                "CMAKE_GENERATOR",
+                env::var("CMAKE_GENERATOR").unwrap_or("Ninja".to_string()),
+            );
+
+            if cfg!(target_os = "linux") {
+                filament_cmake.env("CC", env::var("CC").unwrap_or("clang".to_string()));
+                filament_cmake.env("CXX", env::var("CXX").unwrap_or("clang++".to_string()));
+                filament_cmake.env("ASM", env::var("ASM").unwrap_or("clang".to_string()));
+                cxx_flags += " -stdlib=libc++";
+            }
         } else {
-            filament_native_lib.join(static_lib_filename(lib))
-        };
-        fs::copy(
-            source,
-            library_out_dir.join(static_lib_filename(lib)),
-        )
-        .unwrap();
-    }
+            // if windows
+            if target.abi == Some("gnu".to_owned()) {
+                panic!("MinGW is not supported");
+            }
 
-    // build c++ bindings library
-    let mut cc_build = cc::Build::new();
-    cc_build.file("bindings.cpp");
-    cc_build.include(&filament_include);
-    cc_build.cpp(true);
-    if crt_static {
-        cc_build.static_crt(true);
-    }
-    cc_build.target(&target.to_string());
-    cc_build.out_dir(&library_out_dir);
-    cc_build.cargo_metadata(false);
-    cc_build.warnings(false);
+            filament_cmake.arg(format!(
+                "-DUSE_STATIC_CRT={}",
+                if crt_static { "ON" } else { "OFF" }
+            ));
 
-    if cfg!(target_os = "linux") {
-        cc_build.compiler(PathBuf::from("clang++"));
-    }
-    if cfg!(target_os = "windows") {
-        cc_build.flag("/std:c++latest");
+            match target.architecture.as_str() {
+                "x86_64" => filament_cmake.args(["-A", "x64"]),
+                "i686" => filament_cmake.args(["-A", "Win32"]),
+                _ => panic!("Unsupported architecture"),
+            };
+        }
+
+        filament_cmake.env("CFLAGS", format!("{} {}", compiler_flags, c_flags));
+        filament_cmake.env("CXXFLAGS", format!("{} {}", compiler_flags, cxx_flags));
+        filament_cmake.env("ASMFLAGS", format!("{} {}", compiler_flags, asm_flags));
+
+        run_command(&mut filament_cmake, "cmake");
+
+        // build filament
+        let mut filament_cmake_install = Command::new("cmake");
+        filament_cmake_install
+            .current_dir(&filament_build_dir)
+            .args(["--build", "."])
+            .args(["--target", "install"])
+            .args(["--config", "Release"]);
+        filament_cmake_install.args([
+            "--parallel",
+            &env::var("NUM_JOBS").unwrap_or(num_cpus::get().to_string()),
+        ]);
+
+        run_command(&mut filament_cmake_install, "cmake");
+
+        let filament_native_lib = filament_install_dir.join("lib").join(&target.to_string());
+
+        for lib in filament_link_libs.iter() {
+            let source = if lib == "webpdecoder" {
+                let filename = if cfg!(target_os = "windows") {
+                    "libwebpdecoder.lib".to_owned()
+                } else {
+                    static_lib_filename(lib)
+                };
+                filament_install_dir.join("lib").join(filename)
+            } else {
+                filament_native_lib.join(static_lib_filename(lib))
+            };
+            fs::copy(source, library_out_dir.join(static_lib_filename(lib))).unwrap();
+        }
+        fs::write(&native_stamp, &native_key).unwrap();
     } else {
-        cc_build.flag("-std=c++17");
-        cc_build.cpp_set_stdlib("c++");
+        println!("Filament native build is up to date; skipping CMake build");
     }
 
-    cc_build.compile("bindings");
+    // Rebuild the small C++ bridge independently from the Filament libraries.
+    let bridge_stamp = out_dir.join("filament-bridge.stamp");
+    let bridge_key = format!(
+        "{native_key};bindings={}",
+        hash_bytes(&fs::read("bindings.cpp").unwrap())
+    );
+    let bindings_library = library_out_dir.join(static_lib_filename("bindings"));
+    if !cache_matches(&bridge_stamp, &bridge_key, &[bindings_library]) {
+        let mut cc_build = cc::Build::new();
+        cc_build.file("bindings.cpp");
+        cc_build.include(&filament_include);
+        cc_build.cpp(true);
+        if crt_static {
+            cc_build.static_crt(true);
+        }
+        cc_build.target(&target.to_string());
+        cc_build.out_dir(&library_out_dir);
+        cc_build.cargo_metadata(false);
+        cc_build.warnings(false);
+
+        if cfg!(target_os = "linux") {
+            cc_build.compiler(PathBuf::from("clang++"));
+        }
+        if cfg!(target_os = "windows") {
+            cc_build.flag("/std:c++latest");
+        } else {
+            cc_build.flag("-std=c++17");
+            cc_build.cpp_set_stdlib("c++");
+        }
+
+        cc_build.compile("bindings");
+        fs::write(&bridge_stamp, &bridge_key).unwrap();
+    } else {
+        println!("Filament C++ bridge is up to date; skipping compilation");
+    }
     filament_link_libs.push("bindings".to_owned());
 
     println!("cargo:rerun-if-changed=bindings.cpp");

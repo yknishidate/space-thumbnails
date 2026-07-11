@@ -7,6 +7,7 @@ mod bindgen {
     #![allow(non_snake_case)]
     #![allow(improper_ctypes)]
     #![allow(dead_code)]
+    #![allow(unused_imports)]
     include!(concat!(env!("OUT_DIR"), "/bindings/bindings.rs"));
 }
 

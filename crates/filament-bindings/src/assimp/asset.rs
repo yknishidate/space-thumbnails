@@ -26,7 +26,7 @@ use super::helper::{
 const RESOURCES_AIDEFAULTMAT_DATA: &'static [u8] = include_bytes!("aiDefaultMat.filamat");
 const RESOURCES_AIDEFAULTTRANS_DATA: &'static [u8] = include_bytes!("aiDefaultTrans.filamat");
 
-const DEFAULT_FLAGS: u32 = (post_process::GEN_SMOOTH_NORMALS
+const DEFAULT_FLAGS: u32 = post_process::GEN_SMOOTH_NORMALS
 | post_process::CALC_TANGENT_SPACE
 | post_process::GEN_UV_COORDS
 | post_process::FIND_INSTANCES
@@ -35,7 +35,7 @@ const DEFAULT_FLAGS: u32 = (post_process::GEN_SMOOTH_NORMALS
 | post_process::IMPROVE_CACHE_LOCALITY
 | post_process::SORT_BY_P_TYPE
 // | post_process::PRE_TRANSFORM_VERTICES
-| post_process::TRIANGULATE);
+| post_process::TRIANGULATE;
 
 pub struct CameraInfo {
     pub position: Float3,
@@ -539,8 +539,16 @@ impl AssimpAsset {
 
     pub fn destory(&mut self, engine: &mut Engine) {
         unsafe {
-            engine.destroy_vertex_buffer(&mut self.vertex_buffer);
-            engine.destroy_index_buffer(&mut self.index_buffer);
+            // renderables must be destroyed first: filament asserts that
+            // material instances and buffers are unreferenced when destroyed
+            let mut entity_manager = engine.get_entity_manager().unwrap();
+            for renderable in self.renderables.iter_mut() {
+                engine.destroy_entity_components(&renderable);
+                entity_manager.destory(renderable);
+            }
+
+            engine.destroy_entity_components(&self.root_entity);
+            entity_manager.destory(&mut self.root_entity);
 
             for material_instance in self.material_instances.iter_mut() {
                 engine.destroy_material_instance(material_instance);
@@ -550,14 +558,8 @@ impl AssimpAsset {
                 engine.destroy_material(material);
             }
 
-            let mut entity_manager = engine.get_entity_manager().unwrap();
-            for renderable in self.renderables.iter_mut() {
-                engine.destroy_entity_components(&renderable);
-                entity_manager.destory(renderable);
-            }
-
-            engine.destroy_entity_components(&self.root_entity);
-            entity_manager.destory(&mut self.root_entity);
+            engine.destroy_vertex_buffer(&mut self.vertex_buffer);
+            engine.destroy_index_buffer(&mut self.index_buffer);
         }
     }
 }

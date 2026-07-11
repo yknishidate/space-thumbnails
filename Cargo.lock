@@ -561,7 +561,6 @@ dependencies = [
  "half",
  "num_cpus",
  "num_enum",
- "regex",
  "russimp-sys-static",
  "serde",
  "serde_json",

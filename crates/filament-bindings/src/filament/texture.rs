@@ -1,7 +1,7 @@
-use std::{ffi, ptr};
+use std::ptr;
 
 use crate::{
-    backend::{PixelBufferDescriptor, SamplerType, TextureFormat, TextureSwizzle, TextureUsage},
+    backend::{SamplerType, TextureFormat, TextureSwizzle, TextureUsage},
     bindgen,
 };
 

@@ -5,20 +5,6 @@ use std::{io::ErrorKind, process::Command};
 pub use download::*;
 pub use target::*;
 
-#[cfg(not(target_os = "windows"))]
-pub fn path_regex_escape(path: impl AsRef<str>) -> String {
-    regex::escape(path.as_ref())
-}
-
-#[cfg(target_os = "windows")]
-pub fn path_regex_escape(path: impl AsRef<str>) -> String {
-    let re = regex::Regex::new(r"[/\\]+").unwrap();
-    re.split(path.as_ref())
-        .map(|segment| regex::escape(segment))
-        .collect::<Vec<String>>()
-        .join(r"[/\\]+")
-}
-
 pub fn run_command(cmd: &mut Command, program: &str) {
     println!(
         "current_dir: {:?}\nrunning: {:?}",

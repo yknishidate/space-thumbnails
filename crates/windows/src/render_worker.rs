@@ -131,7 +131,7 @@ fn spawn_worker() -> Worker {
             let result = render(renderer, request.source);
             // free the loaded asset right away so big scenes don't linger in
             // the host process between thumbnail requests
-            renderer.destory_opened_asset();
+            renderer.destroy_opened_asset();
 
             if result_sender.send(result).is_err() {
                 warn!(target: "RenderWorker", "render result discarded (caller timed out)");

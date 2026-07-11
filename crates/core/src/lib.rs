@@ -43,7 +43,7 @@ pub struct SpaceThumbnailsRenderer {
     camera_entity: Entity,
     sunlight_entity: Entity,
     view: View,
-    destory_asset: Option<Box<dyn FnOnce(&mut Engine, &mut Scene)>>,
+    destroy_asset: Option<Box<dyn FnOnce(&mut Engine, &mut Scene)>>,
 
     viewport: Viewport,
 }
@@ -151,7 +151,7 @@ impl SpaceThumbnailsRenderer {
                 camera_entity,
                 sunlight_entity,
                 view,
-                destory_asset: None,
+                destroy_asset: None,
                 viewport,
             }
         }
@@ -205,7 +205,7 @@ impl SpaceThumbnailsRenderer {
 
     pub fn load_assimp_asset(&mut self, mut asset: AssimpAsset) -> Option<&mut Self> {
         let start = Instant::now();
-        self.destory_opened_asset();
+        self.destroy_opened_asset();
 
         unsafe {
             let aabb = asset.get_aabb();
@@ -261,10 +261,10 @@ impl SpaceThumbnailsRenderer {
                 setup_camera_surround_view(&mut camera, &aabb.transform(transform), &self.viewport);
             }
 
-            self.destory_asset = Some(Box::new(move |engine, scene| {
+            self.destroy_asset = Some(Box::new(move |engine, scene| {
                 scene.remove_entities(asset.get_renderables());
                 scene.remove_entity(asset.get_root_entity());
-                asset.destory(engine)
+                asset.destroy(engine)
             }));
         }
 
@@ -280,7 +280,7 @@ impl SpaceThumbnailsRenderer {
         filepath: Option<&Path>,
     ) -> Option<&mut Self> {
         let start = Instant::now();
-        self.destory_opened_asset();
+        self.destroy_opened_asset();
 
         let binary = matches!(Path::new(filename).extension(), Some(e) if e == "glb");
 
@@ -348,7 +348,7 @@ impl SpaceThumbnailsRenderer {
 
             setup_camera_surround_view(&mut camera, &aabb.transform(transform), &self.viewport);
 
-            self.destory_asset = Some(Box::new(move |_engine, scene| {
+            self.destroy_asset = Some(Box::new(move |_engine, scene| {
                 scene.remove_entities(asset.get_entities());
                 loader.destroy_asset(&asset);
                 loader.destroy_materials();
@@ -412,10 +412,10 @@ impl SpaceThumbnailsRenderer {
         (self.viewport.width * self.viewport.height * 4) as usize
     }
 
-    pub fn destory_opened_asset(&mut self) -> &mut Self {
-        let destory_asset = self.destory_asset.take();
-        if let Some(destory) = destory_asset {
-            destory(&mut self.engine, &mut self.scene)
+    pub fn destroy_opened_asset(&mut self) -> &mut Self {
+        let destroy_asset = self.destroy_asset.take();
+        if let Some(destroy) = destroy_asset {
+            destroy(&mut self.engine, &mut self.scene)
         }
 
         self
@@ -425,12 +425,12 @@ impl SpaceThumbnailsRenderer {
 impl Drop for SpaceThumbnailsRenderer {
     fn drop(&mut self) {
         unsafe {
-            self.destory_opened_asset();
+            self.destroy_opened_asset();
             let mut entity_manager = self.engine.get_entity_manager().unwrap();
             self.engine.destroy_entity_components(&self.camera_entity);
             self.engine.destroy_entity_components(&self.sunlight_entity);
-            entity_manager.destory(&mut self.camera_entity);
-            entity_manager.destory(&mut self.sunlight_entity);
+            entity_manager.destroy(&mut self.camera_entity);
+            entity_manager.destroy(&mut self.sunlight_entity);
             self.engine.destroy_texture(&mut self.ibl_texture);
             self.engine.destroy_indirect_light(&mut self.ibl);
             self.engine.destroy_scene(&mut self.scene);

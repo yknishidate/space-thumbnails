@@ -1,6 +1,5 @@
 target
 deploy
-
+*.ps1
 .DS_Store
-
 test_results

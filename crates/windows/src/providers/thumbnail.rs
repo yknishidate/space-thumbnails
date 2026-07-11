@@ -5,7 +5,7 @@ use std::{
 };
 
 use log::{info, warn};
-use space_thumbnails::{RendererBackend, SpaceThumbnailsRenderer};
+use space_thumbnails::RendererBackend;
 use windows::{
     core::{implement, IUnknown, Interface, GUID},
     Win32::{
@@ -19,7 +19,8 @@ use windows::{
 use crate::{
     constant::{ERROR_256X256_ARGB, TIMEOUT_256X256_ARGB, TOOLARGE_256X256_ARGB},
     registry::{register_clsid, RegistryData, RegistryKey, RegistryValue},
-    utils::{create_argb_bitmap, run_timeout, WinStream},
+    render_worker::{render_with_timeout, RenderRequest, RenderSource},
+    utils::{create_argb_bitmap, WinStream},
 };
 
 use super::Provider;
@@ -134,24 +135,14 @@ impl IThumbnailProvider_Impl for ThumbnailHandler {
 
         let filename_hint = self.filename_hint;
 
-        let timeout_result = run_timeout(
-            move || {
-                let stage_start = Instant::now();
-                let mut renderer = SpaceThumbnailsRenderer::new(RendererBackend::Vulkan, size, size);
-                info!(target: "ThumbnailProvider", "Renderer init [{}], Elapsed: {:.2?}", filename_hint, stage_start.elapsed());
-
-                let stage_start = Instant::now();
-                renderer.load_asset_from_memory(
-                    buffer.as_slice(),
-                    format!("inmemory{}", filename_hint),
-                )?;
-                info!(target: "ThumbnailProvider", "Load asset [{}], Elapsed: {:.2?}", filename_hint, stage_start.elapsed());
-
-                let stage_start = Instant::now();
-                let mut screenshot_buffer = vec![0; renderer.get_screenshot_size_in_byte()];
-                renderer.take_screenshot_sync(screenshot_buffer.as_mut_slice());
-                info!(target: "ThumbnailProvider", "Render screenshot [{}], Elapsed: {:.2?}", filename_hint, stage_start.elapsed());
-                Some(screenshot_buffer)
+        let timeout_result = render_with_timeout(
+            RenderRequest {
+                backend: RendererBackend::Vulkan,
+                size,
+                source: RenderSource::Memory {
+                    data: buffer,
+                    filename: format!("inmemory{}", filename_hint),
+                },
             },
             Duration::from_secs(5),
         );

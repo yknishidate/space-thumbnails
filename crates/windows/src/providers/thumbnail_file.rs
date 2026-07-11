@@ -7,7 +7,7 @@ use std::{
 };
 
 use log::info;
-use space_thumbnails::{RendererBackend, SpaceThumbnailsRenderer};
+use space_thumbnails::RendererBackend;
 use windows::{
     core::{implement, IUnknown, Interface, GUID},
     Win32::{
@@ -23,7 +23,8 @@ use windows::{
 use crate::{
     constant::{ERROR_256X256_ARGB, TIMEOUT_256X256_ARGB, TOOLARGE_256X256_ARGB},
     registry::{register_clsid, RegistryData, RegistryKey, RegistryValue},
-    utils::{create_argb_bitmap, run_timeout},
+    render_worker::{render_with_timeout, RenderRequest, RenderSource},
+    utils::create_argb_bitmap,
 };
 
 use super::Provider;
@@ -131,23 +132,11 @@ impl IThumbnailProvider_Impl for ThumbnailFileHandler {
         let start_time = Instant::now();
         info!(target: "ThumbnailFileProvider", "Getting thumbnail from file: {}", filepath);
 
-        let filepath_clone = filepath.clone();
-        let backend = self.backend;
-        let timeout_result = run_timeout(
-            move || {
-                let stage_start = Instant::now();
-                let mut renderer = SpaceThumbnailsRenderer::new(backend, size, size);
-                info!(target: "ThumbnailFileProvider", "Renderer init file: {}, Elapsed: {:.2?}", filepath_clone, stage_start.elapsed());
-
-                let stage_start = Instant::now();
-                renderer.load_asset_from_file(&filepath_clone)?;
-                info!(target: "ThumbnailFileProvider", "Load asset file: {}, Elapsed: {:.2?}", filepath_clone, stage_start.elapsed());
-
-                let stage_start = Instant::now();
-                let mut screenshot_buffer = vec![0; renderer.get_screenshot_size_in_byte()];
-                renderer.take_screenshot_sync(screenshot_buffer.as_mut_slice());
-                info!(target: "ThumbnailFileProvider", "Render screenshot file: {}, Elapsed: {:.2?}", filepath_clone, stage_start.elapsed());
-                Some(screenshot_buffer)
+        let timeout_result = render_with_timeout(
+            RenderRequest {
+                backend: self.backend,
+                size,
+                source: RenderSource::File(filepath.clone()),
             },
             Duration::from_secs(5),
         );

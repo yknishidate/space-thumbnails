@@ -89,7 +89,7 @@ pub extern "stdcall" fn DllMain(
     _reserved: *mut core::ffi::c_void,
 ) -> bool {
     if reason == DLL_PROCESS_ATTACH {
-        eventlog::init("Space Thumbnails", log::Level::Trace).unwrap();
+        crate::logging::init("Space Thumbnails", log::Level::Trace);
 
         unsafe {
             DLL_INSTANCE = dll_instance;

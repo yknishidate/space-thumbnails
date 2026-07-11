@@ -1278,6 +1278,7 @@ name = "space-thumbnails-windows-dll"
 version = "1.0.1"
 dependencies = [
  "eventlog",
+ "humantime",
  "log",
  "space-thumbnails-windows",
  "windows",

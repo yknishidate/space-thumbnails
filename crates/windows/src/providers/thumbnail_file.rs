@@ -135,10 +135,18 @@ impl IThumbnailProvider_Impl for ThumbnailFileHandler {
         let backend = self.backend;
         let timeout_result = run_timeout(
             move || {
+                let stage_start = Instant::now();
                 let mut renderer = SpaceThumbnailsRenderer::new(backend, size, size);
-                renderer.load_asset_from_file(filepath_clone)?;
+                info!(target: "ThumbnailFileProvider", "Renderer init file: {}, Elapsed: {:.2?}", filepath_clone, stage_start.elapsed());
+
+                let stage_start = Instant::now();
+                renderer.load_asset_from_file(&filepath_clone)?;
+                info!(target: "ThumbnailFileProvider", "Load asset file: {}, Elapsed: {:.2?}", filepath_clone, stage_start.elapsed());
+
+                let stage_start = Instant::now();
                 let mut screenshot_buffer = vec![0; renderer.get_screenshot_size_in_byte()];
                 renderer.take_screenshot_sync(screenshot_buffer.as_mut_slice());
+                info!(target: "ThumbnailFileProvider", "Render screenshot file: {}, Elapsed: {:.2?}", filepath_clone, stage_start.elapsed());
                 Some(screenshot_buffer)
             },
             Duration::from_secs(5),

@@ -1,5 +1,9 @@
 use core::panic;
-use std::{cell::Cell, ffi::OsStr, fs, path::Path, rc::Rc};
+use std::{cell::Cell, ffi::OsStr, fs, path::Path, rc::Rc, time::Instant};
+
+use log::info;
+
+const PERF_TARGET: &'static str = "SpaceThumbnailsPerf";
 
 use filament_bindings::{
     assimp::{post_process, AssimpAsset},
@@ -55,6 +59,7 @@ pub enum RendererBackend {
 
 impl SpaceThumbnailsRenderer {
     pub fn new(backend: RendererBackend, width: u32, height: u32) -> Self {
+        let start = Instant::now();
         unsafe {
             let mut engine = Engine::create(match backend {
                 RendererBackend::Default => Backend::DEFAULT,
@@ -63,6 +68,7 @@ impl SpaceThumbnailsRenderer {
                 RendererBackend::Metal => Backend::METAL,
             })
             .unwrap();
+            info!(target: PERF_TARGET, "engine create ({:?}): {:.2?}", backend, start.elapsed());
             let mut scene = engine.create_scene().unwrap();
             let mut swap_chain = engine
                 .create_headless_swap_chain(width, height, SwapChainConfig::TRANSPARENT)
@@ -121,10 +127,19 @@ impl SpaceThumbnailsRenderer {
             view.set_viewport(&viewport);
 
             // warming up
+            let warmup_start = Instant::now();
             renderer.begin_frame(&mut swap_chain);
             renderer.render(&mut view);
             renderer.end_frame();
             engine.flush_and_wait();
+            info!(
+                target: PERF_TARGET,
+                "renderer init total ({}x{}): {:.2?} (warmup frame: {:.2?})",
+                width,
+                height,
+                start.elapsed(),
+                warmup_start.elapsed()
+            );
 
             Self {
                 engine,
@@ -144,15 +159,24 @@ impl SpaceThumbnailsRenderer {
 
     pub fn load_asset_from_file(&mut self, filepath: impl AsRef<Path>) -> Option<&mut Self> {
         if matches!(filepath.as_ref().extension(), Some(e) if e == "gltf" || e == "glb") {
+            let start = Instant::now();
             let data = fs::read(&filepath).ok()?;
+            info!(
+                target: PERF_TARGET,
+                "read file ({} bytes): {:.2?}",
+                data.len(),
+                start.elapsed()
+            );
             self.load_gltf_asset(
                 &data,
                 filepath.as_ref().file_name()?,
                 Some(filepath.as_ref()),
             )
         } else {
+            let start = Instant::now();
             let asset =
                 AssimpAsset::from_file_with_flags(&mut self.engine, filepath, ASSIMP_FLAGS).ok()?;
+            info!(target: PERF_TARGET, "assimp import from file: {:.2?}", start.elapsed());
             self.load_assimp_asset(asset)
         }
     }
@@ -166,6 +190,7 @@ impl SpaceThumbnailsRenderer {
         {
             self.load_gltf_asset(buffer, filename.as_ref(), None)
         } else {
+            let start = Instant::now();
             let asset = AssimpAsset::from_memory_with_flags(
                 &mut self.engine,
                 buffer,
@@ -173,11 +198,13 @@ impl SpaceThumbnailsRenderer {
                 ASSIMP_FLAGS,
             )
             .ok()?;
+            info!(target: PERF_TARGET, "assimp import from memory: {:.2?}", start.elapsed());
             self.load_assimp_asset(asset)
         }
     }
 
     pub fn load_assimp_asset(&mut self, mut asset: AssimpAsset) -> Option<&mut Self> {
+        let start = Instant::now();
         self.destory_opened_asset();
 
         unsafe {
@@ -241,6 +268,8 @@ impl SpaceThumbnailsRenderer {
             }));
         }
 
+        info!(target: PERF_TARGET, "scene setup (assimp): {:.2?}", start.elapsed());
+
         Some(self)
     }
 
@@ -250,6 +279,7 @@ impl SpaceThumbnailsRenderer {
         filename: &OsStr,
         filepath: Option<&Path>,
     ) -> Option<&mut Self> {
+        let start = Instant::now();
         self.destory_opened_asset();
 
         let binary = matches!(Path::new(filename).extension(), Some(e) if e == "glb");
@@ -272,6 +302,7 @@ impl SpaceThumbnailsRenderer {
             } else {
                 loader.create_asset_from_json(&data)?
             };
+            info!(target: PERF_TARGET, "gltf parse asset: {:.2?}", start.elapsed());
 
             let uris = asset.get_resource_uris();
             let has_external_resource = uris
@@ -282,6 +313,7 @@ impl SpaceThumbnailsRenderer {
                 return None;
             }
 
+            let resources_start = Instant::now();
             ResourceLoader::create(ResourceConfiguration {
                 engine: &mut self.engine,
                 gltf_path: filepath_str,
@@ -293,6 +325,11 @@ impl SpaceThumbnailsRenderer {
             .load_resources(&mut asset);
 
             asset.release_source_data();
+            info!(
+                target: PERF_TARGET,
+                "gltf load resources: {:.2?}",
+                resources_start.elapsed()
+            );
 
             let aabb = asset.get_bounding_box();
             let transform = fit_into_unit_cube(&aabb);
@@ -319,6 +356,8 @@ impl SpaceThumbnailsRenderer {
             }));
         }
 
+        info!(target: PERF_TARGET, "gltf load total: {:.2?}", start.elapsed());
+
         Some(self)
     }
 
@@ -340,16 +379,26 @@ impl SpaceThumbnailsRenderer {
                 move |_| ok_inner.set(true),
             );
 
+            let start = Instant::now();
             self.renderer.begin_frame(&mut self.swap_chain);
             self.renderer.render(&mut self.view);
             self.renderer
                 .read_pixels(0, 0, self.viewport.width, self.viewport.height, pixel);
             self.renderer.end_frame();
+            let submit_elapsed = start.elapsed();
             self.engine.flush_and_wait();
 
             if ok.get() == false {
                 panic!("Take screenshot failed");
             }
+
+            info!(
+                target: PERF_TARGET,
+                "render + readback: {:.2?} (submit: {:.2?}, gpu wait: {:.2?})",
+                start.elapsed(),
+                submit_elapsed,
+                start.elapsed() - submit_elapsed
+            );
         }
 
         byte_count

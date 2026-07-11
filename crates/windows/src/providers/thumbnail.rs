@@ -130,18 +130,27 @@ impl IThumbnailProvider_Impl for ThumbnailHandler {
         io::Read::read_to_end(&mut stream, &mut buffer)
             .ok()
             .ok_or(windows::core::Error::from(E_FAIL))?;
+        info!(target: "ThumbnailProvider", "Read stream [{}], {} bytes, Elapsed: {:.2?}", self.filename_hint, buffer.len(), start_time.elapsed());
 
         let filename_hint = self.filename_hint;
 
         let timeout_result = run_timeout(
             move || {
+                let stage_start = Instant::now();
                 let mut renderer = SpaceThumbnailsRenderer::new(RendererBackend::Vulkan, size, size);
+                info!(target: "ThumbnailProvider", "Renderer init [{}], Elapsed: {:.2?}", filename_hint, stage_start.elapsed());
+
+                let stage_start = Instant::now();
                 renderer.load_asset_from_memory(
                     buffer.as_slice(),
                     format!("inmemory{}", filename_hint),
                 )?;
+                info!(target: "ThumbnailProvider", "Load asset [{}], Elapsed: {:.2?}", filename_hint, stage_start.elapsed());
+
+                let stage_start = Instant::now();
                 let mut screenshot_buffer = vec![0; renderer.get_screenshot_size_in_byte()];
                 renderer.take_screenshot_sync(screenshot_buffer.as_mut_slice());
+                info!(target: "ThumbnailProvider", "Render screenshot [{}], Elapsed: {:.2?}", filename_hint, stage_start.elapsed());
                 Some(screenshot_buffer)
             },
             Duration::from_secs(5),

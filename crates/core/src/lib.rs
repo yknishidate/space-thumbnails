@@ -1,6 +1,7 @@
 use core::panic;
 use std::{cell::Cell, ffi::OsStr, fs, path::Path, rc::Rc, time::Instant};
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use log::info;
 
 const PERF_TARGET: &'static str = "SpaceThumbnailsPerf";
@@ -285,11 +286,29 @@ impl SpaceThumbnailsRenderer {
 
         let binary = matches!(Path::new(filename).extension(), Some(e) if e == "glb");
 
+        // This Filament version crashes in ResourceLoader when it encounters an
+        // EXT_meshopt_compression fallback buffer without a URI. Decode the
+        // extension before handing the document to Filament.
+        let meshopt_data = match decompress_meshopt_gltf(data, binary, filepath) {
+            Ok(data) => data,
+            Err(error) => {
+                info!(target: PERF_TARGET, "gltf meshopt decompression failed: {}", error);
+                return None;
+            }
+        };
+        let data = meshopt_data.as_deref().unwrap_or(data);
+        // Meshopt GLBs are converted to ordinary JSON glTF with data-URI
+        // buffers, so they must go through Filament's JSON entry point.
+        let load_as_binary = binary && meshopt_data.is_none();
+        if meshopt_data.is_some() {
+            info!(target: PERF_TARGET, "gltf meshopt buffers decompressed");
+        }
+
         // morph targets crash the bundled filament version inside
         // ResourceLoader::loadResources (access violation), so strip them and
         // render the base mesh instead
         let sanitized_data;
-        let data = match sanitize_gltf(data, binary) {
+        let data = match sanitize_gltf(data, load_as_binary) {
             SanitizedGltf::Stripped(clean) => {
                 info!(
                     target: PERF_TARGET,
@@ -309,13 +328,6 @@ impl SpaceThumbnailsRenderer {
                 );
                 return None;
             }
-            SanitizedGltf::UnsupportedMeshopt => {
-                info!(
-                    target: PERF_TARGET,
-                    "gltf rejected, EXT_meshopt_compression is unsupported by the bundled filament"
-                );
-                return None;
-            }
             SanitizedGltf::Unchanged => data,
         };
 
@@ -332,7 +344,7 @@ impl SpaceThumbnailsRenderer {
                 default_node_name: None,
             })?;
 
-            let mut asset = if binary {
+            let mut asset = if load_as_binary {
                 loader.create_asset_from_binary(&data)?
             } else {
                 loader.create_asset_from_json(&data)?
@@ -508,6 +520,225 @@ fn is_base64_data_uri(uri: &str) -> bool {
     uri.starts_with("data:") && uri.find(";base64,").is_some()
 }
 
+fn json_usize(value: &serde_json::Value, name: &str) -> Result<usize, String> {
+    value
+        .get(name)
+        .and_then(|v| v.as_u64())
+        .and_then(|v| usize::try_from(v).ok())
+        .ok_or_else(|| format!("invalid or missing {name}"))
+}
+
+/// Converts EXT_meshopt_compression views to ordinary buffer views. This is
+/// deliberately performed in Rust because malformed/unsupported Meshopt input
+/// must never reach the old native Filament loader used by Explorer.
+fn decompress_meshopt_gltf(
+    data: &[u8],
+    binary: bool,
+    filepath: Option<&Path>,
+) -> Result<Option<Vec<u8>>, String> {
+    let json = if binary {
+        extract_glb_json_chunk(data).ok_or("invalid GLB JSON chunk")?
+    } else {
+        data
+    };
+    let glb_bin = if binary {
+        extract_glb_bin_chunk(data)
+    } else {
+        None
+    };
+    let mut root: serde_json::Value = serde_json::from_slice(json).map_err(|e| e.to_string())?;
+    let views = match root.get("bufferViews").and_then(|v| v.as_array()) {
+        Some(views) => views,
+        None => return Ok(None),
+    };
+    if !views.iter().any(|view| {
+        view.pointer("/extensions/EXT_meshopt_compression")
+            .is_some()
+    }) {
+        return Ok(None);
+    }
+
+    let buffers_json = root
+        .get("buffers")
+        .and_then(|v| v.as_array())
+        .ok_or("missing buffers")?;
+    let buffer_lengths = buffers_json
+        .iter()
+        .map(|buffer| json_usize(buffer, "byteLength"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_buffer_bytes = buffer_lengths.iter().try_fold(0usize, |total, size| {
+        total.checked_add(*size).ok_or("buffer size overflow")
+    })?;
+    if total_buffer_bytes > MAX_DECOMPRESSED_GLTF_BUFFER_BYTES {
+        return Err("decompressed glTF buffers exceed the size limit".into());
+    }
+    let mut sources = Vec::with_capacity(buffers_json.len());
+    for (buffer_index, buffer) in buffers_json.iter().enumerate() {
+        let source = match buffer.get("uri").and_then(|v| v.as_str()) {
+            Some(uri) if uri.starts_with("data:") => {
+                let encoded = uri.split_once(",").ok_or("invalid data URI")?.1;
+                Some(BASE64.decode(encoded).map_err(|e| e.to_string())?)
+            }
+            Some(uri) => {
+                let parent = filepath
+                    .and_then(Path::parent)
+                    .ok_or("external Meshopt buffer has no base path")?;
+                Some(fs::read(parent.join(uri)).map_err(|e| e.to_string())?)
+            }
+            None if binary && buffer_index == 0 => Some(
+                glb_bin
+                    .ok_or("Meshopt GLB is missing its BIN chunk")?
+                    .to_vec(),
+            ),
+            None => None,
+        };
+        sources.push(source);
+    }
+
+    let views = root
+        .get_mut("bufferViews")
+        .and_then(|v| v.as_array_mut())
+        .unwrap();
+    for view in views {
+        let extension = match view.pointer("/extensions/EXT_meshopt_compression") {
+            Some(extension) => extension.clone(),
+            None => continue,
+        };
+        let source_index = json_usize(&extension, "buffer")?;
+        let source_offset = extension
+            .get("byteOffset")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let source_len = json_usize(&extension, "byteLength")?;
+        let count = json_usize(&extension, "count")?;
+        let stride = json_usize(&extension, "byteStride")?;
+        let output_len = count
+            .checked_mul(stride)
+            .ok_or("decoded buffer size overflow")?;
+        if output_len != json_usize(view, "byteLength")? {
+            return Err("Meshopt decoded size does not match bufferView".into());
+        }
+        let source = sources
+            .get(source_index)
+            .and_then(Option::as_deref)
+            .ok_or("missing Meshopt source buffer")?;
+        let encoded = source
+            .get(
+                source_offset
+                    ..source_offset
+                        .checked_add(source_len)
+                        .ok_or("source range overflow")?,
+            )
+            .ok_or("Meshopt source range is out of bounds")?;
+        let mut decoded = vec![0u8; output_len];
+        let result = unsafe {
+            match extension.get("mode").and_then(|v| v.as_str()) {
+                Some("ATTRIBUTES") => meshopt::ffi::meshopt_decodeVertexBuffer(
+                    decoded.as_mut_ptr().cast(),
+                    count,
+                    stride,
+                    encoded.as_ptr(),
+                    encoded.len(),
+                ),
+                Some("TRIANGLES") => meshopt::ffi::meshopt_decodeIndexBuffer(
+                    decoded.as_mut_ptr().cast(),
+                    count,
+                    stride,
+                    encoded.as_ptr(),
+                    encoded.len(),
+                ),
+                Some("INDICES") => meshopt::ffi::meshopt_decodeIndexSequence(
+                    decoded.as_mut_ptr().cast(),
+                    count,
+                    stride,
+                    encoded.as_ptr(),
+                    encoded.len(),
+                ),
+                _ => return Err("unsupported Meshopt mode".into()),
+            }
+        };
+        if result != 0 {
+            return Err(format!("Meshopt decoder returned {result}"));
+        }
+        unsafe {
+            match extension
+                .get("filter")
+                .and_then(|v| v.as_str())
+                .unwrap_or("NONE")
+            {
+                "NONE" => {}
+                "OCTAHEDRAL" => meshopt::ffi::meshopt_decodeFilterOct(
+                    decoded.as_mut_ptr().cast(),
+                    count,
+                    stride,
+                ),
+                "QUATERNION" => meshopt::ffi::meshopt_decodeFilterQuat(
+                    decoded.as_mut_ptr().cast(),
+                    count,
+                    stride,
+                ),
+                "EXPONENTIAL" => meshopt::ffi::meshopt_decodeFilterExp(
+                    decoded.as_mut_ptr().cast(),
+                    count,
+                    stride,
+                ),
+                _ => return Err("unsupported Meshopt filter".into()),
+            }
+        }
+
+        let target_index = json_usize(view, "buffer")?;
+        let target_offset = view.get("byteOffset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let target = sources
+            .get_mut(target_index)
+            .ok_or("invalid fallback buffer index")?;
+        if target.is_none() {
+            let size = *buffer_lengths
+                .get(target_index)
+                .ok_or("invalid fallback buffer index")?;
+            *target = Some(vec![0; size]);
+        }
+        let target = target.as_mut().unwrap();
+        let end = target_offset
+            .checked_add(output_len)
+            .ok_or("target range overflow")?;
+        target
+            .get_mut(target_offset..end)
+            .ok_or("Meshopt target range is out of bounds")?
+            .copy_from_slice(&decoded);
+        view.get_mut("extensions")
+            .and_then(|v| v.as_object_mut())
+            .map(|e| e.remove("EXT_meshopt_compression"));
+    }
+
+    let buffers = root
+        .get_mut("buffers")
+        .and_then(|v| v.as_array_mut())
+        .unwrap();
+    for (buffer, source) in buffers.iter_mut().zip(sources) {
+        if let Some(source) = source {
+            buffer.as_object_mut().unwrap().insert(
+                "uri".into(),
+                serde_json::Value::String(format!(
+                    "data:application/octet-stream;base64,{}",
+                    BASE64.encode(source)
+                )),
+            );
+        }
+        buffer
+            .get_mut("extensions")
+            .and_then(|v| v.as_object_mut())
+            .map(|e| e.remove("EXT_meshopt_compression"));
+    }
+    for name in ["extensionsUsed", "extensionsRequired"] {
+        if let Some(values) = root.get_mut(name).and_then(|v| v.as_array_mut()) {
+            values.retain(|v| v.as_str() != Some("EXT_meshopt_compression"));
+        }
+    }
+    serde_json::to_vec(&root)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
 enum SanitizedGltf {
     /// Nothing to change, use the original bytes.
     Unchanged,
@@ -517,9 +748,6 @@ enum SanitizedGltf {
     /// filament version (its handle arena is a compile-time constant and
     /// overflowing it crashes with an access violation).
     TooComplex { nodes: usize, primitives: usize },
-    /// Refuse to render: the bundled Filament crashes while loading resources
-    /// for EXT_meshopt_compression assets.
-    UnsupportedMeshopt,
 }
 
 /// The bundled filament crashes when its handle arena overflows
@@ -527,6 +755,7 @@ enum SanitizedGltf {
 /// models stay far below these limits.
 const MAX_GLTF_NODES: usize = 8192;
 const MAX_GLTF_PRIMITIVES: usize = 4096;
+const MAX_DECOMPRESSED_GLTF_BUFFER_BYTES: usize = 300 * 1024 * 1024;
 
 fn sanitize_gltf(data: &[u8], binary: bool) -> SanitizedGltf {
     if binary {
@@ -557,20 +786,6 @@ fn sanitize_gltf_json(json_bytes: &[u8]) -> SanitizedGltf {
         // let the regular loader report the parse error
         Err(_) => return SanitizedGltf::Unchanged,
     };
-
-    let uses_meshopt = root
-        .get("bufferViews")
-        .and_then(|views| views.as_array())
-        .map(|views| {
-            views.iter().any(|view| {
-                view.pointer("/extensions/EXT_meshopt_compression")
-                    .is_some()
-            })
-        })
-        .unwrap_or(false);
-    if uses_meshopt {
-        return SanitizedGltf::UnsupportedMeshopt;
-    }
 
     let nodes = root
         .get("nodes")
@@ -649,6 +864,29 @@ fn extract_glb_json_chunk(data: &[u8]) -> Option<&[u8]> {
     data.get(20..20 + chunk_len)
 }
 
+/// Returns the first BIN chunk of a GLB container.
+fn extract_glb_bin_chunk(data: &[u8]) -> Option<&[u8]> {
+    if data.len() < 20 || &data[0..4] != b"glTF" {
+        return None;
+    }
+
+    let declared_len = u32::from_le_bytes(data[8..12].try_into().ok()?) as usize;
+    let end = declared_len.min(data.len());
+    let mut offset = 12usize;
+    while offset.checked_add(8)? <= end {
+        let chunk_len = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
+        let chunk_type = &data[offset + 4..offset + 8];
+        let chunk_start = offset.checked_add(8)?;
+        let chunk_end = chunk_start.checked_add(chunk_len)?;
+        let chunk = data.get(chunk_start..chunk_end)?;
+        if chunk_type == b"BIN\0" {
+            return Some(chunk);
+        }
+        offset = chunk_end;
+    }
+    None
+}
+
 /// Rebuilds a GLB container with a replacement JSON chunk, keeping all
 /// following chunks (BIN, ...) as-is.
 fn rebuild_glb(original: &[u8], new_json: &[u8]) -> Option<Vec<u8>> {
@@ -675,9 +913,95 @@ fn rebuild_glb(original: &[u8], new_json: &[u8]) -> Option<Vec<u8>> {
 mod test {
     use std::{fs, io::Cursor, path::PathBuf, str::FromStr, time::Instant};
 
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use image::{ImageBuffer, ImageOutputFormat, Rgba};
 
-    use crate::{RendererBackend, SpaceThumbnailsRenderer};
+    use crate::{decompress_meshopt_gltf, RendererBackend, SpaceThumbnailsRenderer};
+
+    fn meshopt_fixture() -> (Vec<u8>, Vec<u8>, serde_json::Value) {
+        let vertices = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let expected = vertices
+            .iter()
+            .flat_map(|vertex| vertex.iter().flat_map(|value| value.to_le_bytes()))
+            .collect::<Vec<_>>();
+        let encoded = meshopt::encode_vertex_buffer(&vertices).unwrap();
+        let root = serde_json::json!({
+            "asset": { "version": "2.0" },
+            "extensionsUsed": ["EXT_meshopt_compression"],
+            "extensionsRequired": ["EXT_meshopt_compression"],
+            "buffers": [
+                { "byteLength": encoded.len() },
+                { "byteLength": expected.len() }
+            ],
+            "bufferViews": [{
+                "buffer": 1,
+                "byteOffset": 0,
+                "byteLength": expected.len(),
+                "extensions": {
+                    "EXT_meshopt_compression": {
+                        "buffer": 0,
+                        "byteOffset": 0,
+                        "byteLength": encoded.len(),
+                        "byteStride": 12,
+                        "count": vertices.len(),
+                        "mode": "ATTRIBUTES"
+                    }
+                }
+            }]
+        });
+        (encoded, expected, root)
+    }
+
+    fn decoded_buffer(document: &[u8], buffer_index: usize) -> Vec<u8> {
+        let root: serde_json::Value = serde_json::from_slice(document).unwrap();
+        assert!(root["bufferViews"][0]["extensions"]["EXT_meshopt_compression"].is_null());
+        assert!(!root["extensionsRequired"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "EXT_meshopt_compression"));
+        let uri = root["buffers"][buffer_index]["uri"].as_str().unwrap();
+        BASE64.decode(uri.split_once(',').unwrap().1).unwrap()
+    }
+
+    #[test]
+    fn decompresses_meshopt_gltf() {
+        let (encoded, expected, mut root) = meshopt_fixture();
+        root["buffers"][0]["uri"] = format!(
+            "data:application/octet-stream;base64,{}",
+            BASE64.encode(encoded)
+        )
+        .into();
+        let document = serde_json::to_vec(&root).unwrap();
+
+        let decoded = decompress_meshopt_gltf(&document, false, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded_buffer(&decoded, 1), expected);
+    }
+
+    #[test]
+    fn decompresses_meshopt_glb() {
+        let (encoded, expected, root) = meshopt_fixture();
+        let mut json = serde_json::to_vec(&root).unwrap();
+        json.resize((json.len() + 3) & !3, b' ');
+        let mut bin = encoded;
+        bin.resize((bin.len() + 3) & !3, 0);
+        let total_len = 12 + 8 + json.len() + 8 + bin.len();
+        let mut glb = Vec::with_capacity(total_len);
+        glb.extend_from_slice(b"glTF");
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&(total_len as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"JSON");
+        glb.extend_from_slice(&json);
+        glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"BIN\0");
+        glb.extend_from_slice(&bin);
+
+        let decoded = decompress_meshopt_gltf(&glb, true, None).unwrap().unwrap();
+        assert_eq!(decoded_buffer(&decoded, 1), expected);
+    }
 
     #[test]
     fn render_file_test() {

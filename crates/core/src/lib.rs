@@ -1,7 +1,6 @@
 use core::panic;
 use std::{cell::Cell, ffi::OsStr, fs, path::Path, rc::Rc, time::Instant};
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use log::info;
 
 const PERF_TARGET: &'static str = "SpaceThumbnailsPerf";
@@ -10,9 +9,8 @@ use filament_bindings::{
     assimp::{post_process, AssimpAsset},
     backend::{Backend, PixelBufferDescriptor, PixelDataFormat, PixelDataType},
     filament::{
-        self, sRGBColor, Aabb, Camera, ClearOptions, Engine, Fov, IndirectLight,
-        IndirectLightBuilder, LightBuilder, Projection, Renderer, Scene, SwapChain,
-        SwapChainConfig, Texture, View, Viewport,
+        self, sRGBColor, Aabb, Camera, ClearOptions, Engine, IndirectLight, IndirectLightBuilder,
+        LightBuilder, Renderer, Scene, SwapChain, SwapChainConfig, Texture, View, Viewport,
     },
     glftio::{
         AssetConfiguration, AssetLoader, MaterialProvider, ResourceConfiguration, ResourceLoader,
@@ -176,7 +174,13 @@ impl SpaceThumbnailsRenderer {
         } else {
             let start = Instant::now();
             let asset =
-                AssimpAsset::from_file_with_flags(&mut self.engine, filepath, ASSIMP_FLAGS).ok()?;
+                match AssimpAsset::from_file_with_flags(&mut self.engine, filepath, ASSIMP_FLAGS) {
+                    Ok(asset) => asset,
+                    Err(error) => {
+                        log::warn!(target: PERF_TARGET, "assimp import failed: {error}");
+                        return None;
+                    }
+                };
             info!(target: PERF_TARGET, "assimp import from file: {:.2?}", start.elapsed());
             self.load_assimp_asset(asset)
         }
@@ -192,13 +196,21 @@ impl SpaceThumbnailsRenderer {
             self.load_gltf_asset(buffer, filename.as_ref(), None)
         } else {
             let start = Instant::now();
-            let asset = AssimpAsset::from_memory_with_flags(
+            let format_hint = Path::new(filename.as_ref())
+                .extension()
+                .and_then(OsStr::to_str)?;
+            let asset = match AssimpAsset::from_memory_with_flags(
                 &mut self.engine,
                 buffer,
-                filename.as_ref().to_str()?,
+                format_hint,
                 ASSIMP_FLAGS,
-            )
-            .ok()?;
+            ) {
+                Ok(asset) => asset,
+                Err(error) => {
+                    log::warn!(target: PERF_TARGET, "assimp memory import failed ({format_hint}): {error}");
+                    return None;
+                }
+            };
             info!(target: PERF_TARGET, "assimp import from memory: {:.2?}", start.elapsed());
             self.load_assimp_asset(asset)
         }
@@ -210,6 +222,12 @@ impl SpaceThumbnailsRenderer {
 
         unsafe {
             let aabb = asset.get_aabb();
+            info!(
+                target: PERF_TARGET,
+                "assimp bounds: min={:?}, max={:?}",
+                aabb.min.vec,
+                aabb.max.vec
+            );
             let transform = fit_into_unit_cube(aabb);
 
             let mut transform_manager = self.engine.get_transform_manager()?;
@@ -228,39 +246,10 @@ impl SpaceThumbnailsRenderer {
 
             camera.set_exposure_physical(16.0, 1.0 / 125.0, 100.0);
 
-            if let Some(camera_info) = asset.get_main_camera() {
-                let aspect = self.viewport.width as f64 / self.viewport.height as f64;
-                if camera_info.horizontal_fov != 0.0 {
-                    camera.set_projection_fov_direction(
-                        camera_info.horizontal_fov,
-                        aspect,
-                        0.1,
-                        f64::INFINITY,
-                        Fov::HORIZONTAL,
-                    );
-                } else {
-                    camera.set_projection(
-                        Projection::ORTHO,
-                        -camera_info.orthographic_width,
-                        camera_info.orthographic_width,
-                        -camera_info.orthographic_width / aspect,
-                        camera_info.orthographic_width / aspect,
-                        0.1,
-                        100000.0,
-                    );
-                }
-                transform_manager.set_transform_float(
-                    &transform_manager.get_instance(&self.camera_entity).unwrap(),
-                    &(transform
-                        * Mat4f::look_at(
-                            &camera_info.position,
-                            &camera_info.look_at,
-                            &camera_info.up,
-                        )),
-                )
-            } else {
-                setup_camera_surround_view(&mut camera, &aabb.transform(transform), &self.viewport);
-            }
+            // Source files often contain authoring cameras that point away
+            // from the model or frame only part of it. Thumbnails should
+            // consistently frame the complete imported bounds instead.
+            setup_camera_surround_view(&mut camera, &aabb.transform(transform), &self.viewport);
 
             self.destroy_asset = Some(Box::new(move |engine, scene| {
                 scene.remove_entities(asset.get_renderables());
@@ -285,24 +274,10 @@ impl SpaceThumbnailsRenderer {
         self.destroy_opened_asset();
 
         let binary = matches!(Path::new(filename).extension(), Some(e) if e == "glb");
+        let requires_jit_materials = gltf_uses_extension(data, binary, "KHR_materials_sheen");
 
-        // This Filament version crashes in ResourceLoader when it encounters an
-        // EXT_meshopt_compression fallback buffer without a URI. Decode the
-        // extension before handing the document to Filament.
-        let meshopt_data = match decompress_meshopt_gltf(data, binary, filepath) {
-            Ok(data) => data,
-            Err(error) => {
-                info!(target: PERF_TARGET, "gltf meshopt decompression failed: {}", error);
-                return None;
-            }
-        };
-        let data = meshopt_data.as_deref().unwrap_or(data);
-        // Meshopt GLBs are converted to ordinary JSON glTF with data-URI
-        // buffers, so they must go through Filament's JSON entry point.
-        let load_as_binary = binary && meshopt_data.is_none();
-        if meshopt_data.is_some() {
-            info!(target: PERF_TARGET, "gltf meshopt buffers decompressed");
-        }
+        // Current Filament gltfio handles EXT_meshopt_compression directly.
+        let load_as_binary = binary;
 
         // morph targets crash the bundled filament version inside
         // ResourceLoader::loadResources (access violation), so strip them and
@@ -334,7 +309,17 @@ impl SpaceThumbnailsRenderer {
         let filepath_str = filepath.and_then(|p| p.to_str().map(|s| s.to_owned()));
 
         unsafe {
-            let materials = MaterialProvider::create_ubershader_loader(&mut self.engine)?;
+            // The precompiled archive contains Sheen only for opaque blending
+            // (e.g. sheen + BLEND is missing); on a miss gltfio falls back to
+            // the default material but still writes sheen uniforms onto it and
+            // aborts ("uniform named sheenColorIndex not found",
+            // SheenWoodLeatherSofa reproduces this). Use JIT only when needed
+            // so ordinary thumbnails retain the much faster ubershader path.
+            let materials = if requires_jit_materials {
+                MaterialProvider::create_material_generator(&mut self.engine, false)?
+            } else {
+                MaterialProvider::create_ubershader_loader(&mut self.engine)?
+            };
             let mut entity_manager = self.engine.get_entity_manager()?;
             let mut transform_manager = self.engine.get_transform_manager()?;
             let mut loader = AssetLoader::create(AssetConfiguration {
@@ -520,223 +505,26 @@ fn is_base64_data_uri(uri: &str) -> bool {
     uri.starts_with("data:") && uri.find(";base64,").is_some()
 }
 
-fn json_usize(value: &serde_json::Value, name: &str) -> Result<usize, String> {
-    value
-        .get(name)
-        .and_then(|v| v.as_u64())
-        .and_then(|v| usize::try_from(v).ok())
-        .ok_or_else(|| format!("invalid or missing {name}"))
-}
-
-/// Converts EXT_meshopt_compression views to ordinary buffer views. This is
-/// deliberately performed in Rust because malformed/unsupported Meshopt input
-/// must never reach the old native Filament loader used by Explorer.
-fn decompress_meshopt_gltf(
-    data: &[u8],
-    binary: bool,
-    filepath: Option<&Path>,
-) -> Result<Option<Vec<u8>>, String> {
+fn gltf_uses_extension(data: &[u8], binary: bool, extension: &str) -> bool {
     let json = if binary {
-        extract_glb_json_chunk(data).ok_or("invalid GLB JSON chunk")?
+        match extract_glb_json_chunk(data) {
+            Some(json) => json,
+            None => return false,
+        }
     } else {
         data
     };
-    let glb_bin = if binary {
-        extract_glb_bin_chunk(data)
-    } else {
-        None
-    };
-    let mut root: serde_json::Value = serde_json::from_slice(json).map_err(|e| e.to_string())?;
-    let views = match root.get("bufferViews").and_then(|v| v.as_array()) {
-        Some(views) => views,
-        None => return Ok(None),
-    };
-    if !views.iter().any(|view| {
-        view.pointer("/extensions/EXT_meshopt_compression")
-            .is_some()
-    }) {
-        return Ok(None);
-    }
 
-    let buffers_json = root
-        .get("buffers")
-        .and_then(|v| v.as_array())
-        .ok_or("missing buffers")?;
-    let buffer_lengths = buffers_json
-        .iter()
-        .map(|buffer| json_usize(buffer, "byteLength"))
-        .collect::<Result<Vec<_>, _>>()?;
-    let total_buffer_bytes = buffer_lengths.iter().try_fold(0usize, |total, size| {
-        total.checked_add(*size).ok_or("buffer size overflow")
-    })?;
-    if total_buffer_bytes > MAX_DECOMPRESSED_GLTF_BUFFER_BYTES {
-        return Err("decompressed glTF buffers exceed the size limit".into());
-    }
-    let mut sources = Vec::with_capacity(buffers_json.len());
-    for (buffer_index, buffer) in buffers_json.iter().enumerate() {
-        let source = match buffer.get("uri").and_then(|v| v.as_str()) {
-            Some(uri) if uri.starts_with("data:") => {
-                let encoded = uri.split_once(",").ok_or("invalid data URI")?.1;
-                Some(BASE64.decode(encoded).map_err(|e| e.to_string())?)
-            }
-            Some(uri) => {
-                let parent = filepath
-                    .and_then(Path::parent)
-                    .ok_or("external Meshopt buffer has no base path")?;
-                Some(fs::read(parent.join(uri)).map_err(|e| e.to_string())?)
-            }
-            None if binary && buffer_index == 0 => Some(
-                glb_bin
-                    .ok_or("Meshopt GLB is missing its BIN chunk")?
-                    .to_vec(),
-            ),
-            None => None,
-        };
-        sources.push(source);
-    }
-
-    let views = root
-        .get_mut("bufferViews")
-        .and_then(|v| v.as_array_mut())
-        .unwrap();
-    for view in views {
-        let extension = match view.pointer("/extensions/EXT_meshopt_compression") {
-            Some(extension) => extension.clone(),
-            None => continue,
-        };
-        let source_index = json_usize(&extension, "buffer")?;
-        let source_offset = extension
-            .get("byteOffset")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
-        let source_len = json_usize(&extension, "byteLength")?;
-        let count = json_usize(&extension, "count")?;
-        let stride = json_usize(&extension, "byteStride")?;
-        let output_len = count
-            .checked_mul(stride)
-            .ok_or("decoded buffer size overflow")?;
-        if output_len != json_usize(view, "byteLength")? {
-            return Err("Meshopt decoded size does not match bufferView".into());
-        }
-        let source = sources
-            .get(source_index)
-            .and_then(Option::as_deref)
-            .ok_or("missing Meshopt source buffer")?;
-        let encoded = source
-            .get(
-                source_offset
-                    ..source_offset
-                        .checked_add(source_len)
-                        .ok_or("source range overflow")?,
-            )
-            .ok_or("Meshopt source range is out of bounds")?;
-        let mut decoded = vec![0u8; output_len];
-        let result = unsafe {
-            match extension.get("mode").and_then(|v| v.as_str()) {
-                Some("ATTRIBUTES") => meshopt::ffi::meshopt_decodeVertexBuffer(
-                    decoded.as_mut_ptr().cast(),
-                    count,
-                    stride,
-                    encoded.as_ptr(),
-                    encoded.len(),
-                ),
-                Some("TRIANGLES") => meshopt::ffi::meshopt_decodeIndexBuffer(
-                    decoded.as_mut_ptr().cast(),
-                    count,
-                    stride,
-                    encoded.as_ptr(),
-                    encoded.len(),
-                ),
-                Some("INDICES") => meshopt::ffi::meshopt_decodeIndexSequence(
-                    decoded.as_mut_ptr().cast(),
-                    count,
-                    stride,
-                    encoded.as_ptr(),
-                    encoded.len(),
-                ),
-                _ => return Err("unsupported Meshopt mode".into()),
-            }
-        };
-        if result != 0 {
-            return Err(format!("Meshopt decoder returned {result}"));
-        }
-        unsafe {
-            match extension
-                .get("filter")
-                .and_then(|v| v.as_str())
-                .unwrap_or("NONE")
-            {
-                "NONE" => {}
-                "OCTAHEDRAL" => meshopt::ffi::meshopt_decodeFilterOct(
-                    decoded.as_mut_ptr().cast(),
-                    count,
-                    stride,
-                ),
-                "QUATERNION" => meshopt::ffi::meshopt_decodeFilterQuat(
-                    decoded.as_mut_ptr().cast(),
-                    count,
-                    stride,
-                ),
-                "EXPONENTIAL" => meshopt::ffi::meshopt_decodeFilterExp(
-                    decoded.as_mut_ptr().cast(),
-                    count,
-                    stride,
-                ),
-                _ => return Err("unsupported Meshopt filter".into()),
-            }
-        }
-
-        let target_index = json_usize(view, "buffer")?;
-        let target_offset = view.get("byteOffset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let target = sources
-            .get_mut(target_index)
-            .ok_or("invalid fallback buffer index")?;
-        if target.is_none() {
-            let size = *buffer_lengths
-                .get(target_index)
-                .ok_or("invalid fallback buffer index")?;
-            *target = Some(vec![0; size]);
-        }
-        let target = target.as_mut().unwrap();
-        let end = target_offset
-            .checked_add(output_len)
-            .ok_or("target range overflow")?;
-        target
-            .get_mut(target_offset..end)
-            .ok_or("Meshopt target range is out of bounds")?
-            .copy_from_slice(&decoded);
-        view.get_mut("extensions")
-            .and_then(|v| v.as_object_mut())
-            .map(|e| e.remove("EXT_meshopt_compression"));
-    }
-
-    let buffers = root
-        .get_mut("buffers")
-        .and_then(|v| v.as_array_mut())
-        .unwrap();
-    for (buffer, source) in buffers.iter_mut().zip(sources) {
-        if let Some(source) = source {
-            buffer.as_object_mut().unwrap().insert(
-                "uri".into(),
-                serde_json::Value::String(format!(
-                    "data:application/octet-stream;base64,{}",
-                    BASE64.encode(source)
-                )),
-            );
-        }
-        buffer
-            .get_mut("extensions")
-            .and_then(|v| v.as_object_mut())
-            .map(|e| e.remove("EXT_meshopt_compression"));
-    }
-    for name in ["extensionsUsed", "extensionsRequired"] {
-        if let Some(values) = root.get_mut(name).and_then(|v| v.as_array_mut()) {
-            values.retain(|v| v.as_str() != Some("EXT_meshopt_compression"));
-        }
-    }
-    serde_json::to_vec(&root)
-        .map(Some)
-        .map_err(|e| e.to_string())
+    serde_json::from_slice::<serde_json::Value>(json)
+        .ok()
+        .and_then(|root| root.get("extensionsUsed").cloned())
+        .and_then(|extensions| extensions.as_array().cloned())
+        .map(|extensions| {
+            extensions
+                .iter()
+                .any(|value| value.as_str() == Some(extension))
+        })
+        .unwrap_or(false)
 }
 
 enum SanitizedGltf {
@@ -755,7 +543,6 @@ enum SanitizedGltf {
 /// models stay far below these limits.
 const MAX_GLTF_NODES: usize = 8192;
 const MAX_GLTF_PRIMITIVES: usize = 4096;
-const MAX_DECOMPRESSED_GLTF_BUFFER_BYTES: usize = 300 * 1024 * 1024;
 
 fn sanitize_gltf(data: &[u8], binary: bool) -> SanitizedGltf {
     if binary {
@@ -864,29 +651,6 @@ fn extract_glb_json_chunk(data: &[u8]) -> Option<&[u8]> {
     data.get(20..20 + chunk_len)
 }
 
-/// Returns the first BIN chunk of a GLB container.
-fn extract_glb_bin_chunk(data: &[u8]) -> Option<&[u8]> {
-    if data.len() < 20 || &data[0..4] != b"glTF" {
-        return None;
-    }
-
-    let declared_len = u32::from_le_bytes(data[8..12].try_into().ok()?) as usize;
-    let end = declared_len.min(data.len());
-    let mut offset = 12usize;
-    while offset.checked_add(8)? <= end {
-        let chunk_len = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
-        let chunk_type = &data[offset + 4..offset + 8];
-        let chunk_start = offset.checked_add(8)?;
-        let chunk_end = chunk_start.checked_add(chunk_len)?;
-        let chunk = data.get(chunk_start..chunk_end)?;
-        if chunk_type == b"BIN\0" {
-            return Some(chunk);
-        }
-        offset = chunk_end;
-    }
-    None
-}
-
 /// Rebuilds a GLB container with a replacement JSON chunk, keeping all
 /// following chunks (BIN, ...) as-is.
 fn rebuild_glb(original: &[u8], new_json: &[u8]) -> Option<Vec<u8>> {
@@ -913,95 +677,9 @@ fn rebuild_glb(original: &[u8], new_json: &[u8]) -> Option<Vec<u8>> {
 mod test {
     use std::{fs, io::Cursor, path::PathBuf, str::FromStr, time::Instant};
 
-    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use image::{ImageBuffer, ImageOutputFormat, Rgba};
 
-    use crate::{decompress_meshopt_gltf, RendererBackend, SpaceThumbnailsRenderer};
-
-    fn meshopt_fixture() -> (Vec<u8>, Vec<u8>, serde_json::Value) {
-        let vertices = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let expected = vertices
-            .iter()
-            .flat_map(|vertex| vertex.iter().flat_map(|value| value.to_le_bytes()))
-            .collect::<Vec<_>>();
-        let encoded = meshopt::encode_vertex_buffer(&vertices).unwrap();
-        let root = serde_json::json!({
-            "asset": { "version": "2.0" },
-            "extensionsUsed": ["EXT_meshopt_compression"],
-            "extensionsRequired": ["EXT_meshopt_compression"],
-            "buffers": [
-                { "byteLength": encoded.len() },
-                { "byteLength": expected.len() }
-            ],
-            "bufferViews": [{
-                "buffer": 1,
-                "byteOffset": 0,
-                "byteLength": expected.len(),
-                "extensions": {
-                    "EXT_meshopt_compression": {
-                        "buffer": 0,
-                        "byteOffset": 0,
-                        "byteLength": encoded.len(),
-                        "byteStride": 12,
-                        "count": vertices.len(),
-                        "mode": "ATTRIBUTES"
-                    }
-                }
-            }]
-        });
-        (encoded, expected, root)
-    }
-
-    fn decoded_buffer(document: &[u8], buffer_index: usize) -> Vec<u8> {
-        let root: serde_json::Value = serde_json::from_slice(document).unwrap();
-        assert!(root["bufferViews"][0]["extensions"]["EXT_meshopt_compression"].is_null());
-        assert!(!root["extensionsRequired"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value == "EXT_meshopt_compression"));
-        let uri = root["buffers"][buffer_index]["uri"].as_str().unwrap();
-        BASE64.decode(uri.split_once(',').unwrap().1).unwrap()
-    }
-
-    #[test]
-    fn decompresses_meshopt_gltf() {
-        let (encoded, expected, mut root) = meshopt_fixture();
-        root["buffers"][0]["uri"] = format!(
-            "data:application/octet-stream;base64,{}",
-            BASE64.encode(encoded)
-        )
-        .into();
-        let document = serde_json::to_vec(&root).unwrap();
-
-        let decoded = decompress_meshopt_gltf(&document, false, None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(decoded_buffer(&decoded, 1), expected);
-    }
-
-    #[test]
-    fn decompresses_meshopt_glb() {
-        let (encoded, expected, root) = meshopt_fixture();
-        let mut json = serde_json::to_vec(&root).unwrap();
-        json.resize((json.len() + 3) & !3, b' ');
-        let mut bin = encoded;
-        bin.resize((bin.len() + 3) & !3, 0);
-        let total_len = 12 + 8 + json.len() + 8 + bin.len();
-        let mut glb = Vec::with_capacity(total_len);
-        glb.extend_from_slice(b"glTF");
-        glb.extend_from_slice(&2u32.to_le_bytes());
-        glb.extend_from_slice(&(total_len as u32).to_le_bytes());
-        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
-        glb.extend_from_slice(b"JSON");
-        glb.extend_from_slice(&json);
-        glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
-        glb.extend_from_slice(b"BIN\0");
-        glb.extend_from_slice(&bin);
-
-        let decoded = decompress_meshopt_gltf(&glb, true, None).unwrap().unwrap();
-        assert_eq!(decoded_buffer(&decoded, 1), expected);
-    }
+    use crate::{RendererBackend, SpaceThumbnailsRenderer};
 
     #[test]
     fn render_file_test() {

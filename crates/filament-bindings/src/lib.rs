@@ -1,0 +1,23 @@
+mod bindgen {
+    #![allow(clippy::all)]
+    #![allow(unknown_lints)]
+    #![allow(deref_nullptr)]
+    #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
+    #![allow(improper_ctypes)]
+    #![allow(dead_code)]
+    #![allow(unused_imports)]
+    include!(concat!(env!("OUT_DIR"), "/bindings/bindings.rs"));
+}
+
+#[cfg(feature = "assimp")]
+pub mod assimp;
+pub mod backend;
+pub mod filament;
+pub mod filameshio;
+pub mod glftio;
+pub mod ibl;
+pub mod image;
+pub mod math;
+pub mod utils;

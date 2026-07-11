@@ -1,0 +1,6 @@
+[submodule "crates/russimp-sys-static/assimp"]
+	path = crates/russimp-sys-static/assimp
+	url = https://github.com/assimp/assimp.git
+[submodule "crates/filament-bindings/filament"]
+	path = crates/filament-bindings/filament
+	url = https://github.com/google/filament.git

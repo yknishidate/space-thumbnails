@@ -39,14 +39,12 @@ lazy_static! {
         Box::new(ThumbnailFileProvider::new(
             GUID::from_u128(0xd13b767b_a97f_4753_a4a3_7c7c15f6b25c),
             ".gltf",
-            // issue: https://github.com/google/filament/issues/5432
-            space_thumbnails::RendererBackend::OpenGL
+            space_thumbnails::RendererBackend::Vulkan
         )),
         Box::new(ThumbnailFileProvider::new(
             GUID::from_u128(0x99ff43f0_d914_4a7a_8325_a8013995c41d),
             ".glb",
-            // issue: https://github.com/google/filament/issues/5432
-            space_thumbnails::RendererBackend::OpenGL
+            space_thumbnails::RendererBackend::Vulkan
         ))
     ];
 }

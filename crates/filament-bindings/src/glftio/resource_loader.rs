@@ -22,6 +22,7 @@ pub struct ResourceLoader {
     native: ptr::NonNull<bindgen::filament_gltfio_ResourceLoader>,
     stb_provider: Option<ptr::NonNull<bindgen::filament_gltfio_TextureProvider>>,
     ktx2_provider: Option<ptr::NonNull<bindgen::filament_gltfio_TextureProvider>>,
+    webp_provider: Option<ptr::NonNull<bindgen::filament_gltfio_TextureProvider>>,
 }
 
 impl ResourceLoader {
@@ -38,7 +39,12 @@ impl ResourceLoader {
     #[inline]
     pub fn try_from_native(native: *mut bindgen::filament_gltfio_ResourceLoader) -> Option<Self> {
         let ptr = ptr::NonNull::new(native)?;
-        Some(ResourceLoader { native: ptr, stb_provider: None, ktx2_provider: None })
+        Some(ResourceLoader {
+            native: ptr,
+            stb_provider: None,
+            ktx2_provider: None,
+            webp_provider: None,
+        })
     }
 
     pub unsafe fn create(config: ResourceConfiguration) -> Option<Self> {
@@ -67,6 +73,9 @@ impl ResourceLoader {
         loader.ktx2_provider = ptr::NonNull::new(bindgen::helper_gltfio_create_ktx2_provider(
             config.engine.native_mut(),
         ));
+        loader.webp_provider = ptr::NonNull::new(bindgen::helper_gltfio_create_webp_provider(
+            config.engine.native_mut(),
+        ));
         if let Some(provider) = loader.stb_provider {
             for mime in [b"image/png\0".as_ptr(), b"image/jpeg\0".as_ptr()] {
                 bindgen::filament_gltfio_ResourceLoader_addTextureProvider(
@@ -77,6 +86,11 @@ impl ResourceLoader {
         if let Some(provider) = loader.ktx2_provider {
             bindgen::filament_gltfio_ResourceLoader_addTextureProvider(
                 loader.native_mut(), b"image/ktx2\0".as_ptr().cast(), provider.as_ptr(),
+            );
+        }
+        if let Some(provider) = loader.webp_provider {
+            bindgen::filament_gltfio_ResourceLoader_addTextureProvider(
+                loader.native_mut(), b"image/webp\0".as_ptr().cast(), provider.as_ptr(),
             );
         }
         Some(loader)
@@ -133,6 +147,9 @@ impl Drop for ResourceLoader {
                 bindgen::helper_gltfio_texture_provider_delete(provider.as_ptr());
             }
             if let Some(provider) = self.ktx2_provider.take() {
+                bindgen::helper_gltfio_texture_provider_delete(provider.as_ptr());
+            }
+            if let Some(provider) = self.webp_provider.take() {
                 bindgen::helper_gltfio_texture_provider_delete(provider.as_ptr());
             }
         }

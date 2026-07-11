@@ -46,6 +46,7 @@ fn build_from_source(target: Target, crt_static: bool) -> BuildManifest {
         .arg(format!("-DFILAMENT_SKIP_SDL2={}", "ON"))
         .arg(format!("-DUSE_STATIC_LIBCXX={}", "OFF"))
         .arg(format!("-DFILAMENT_SUPPORTS_VULKAN={}", "ON"))
+        .arg(format!("-DFILAMENT_SUPPORTS_WEBP_TEXTURES={}", "ON"))
         .arg(format!(
             "-DCMAKE_INSTALL_PREFIX={}",
             filament_install_dir.to_str().unwrap()
@@ -147,14 +148,25 @@ fn build_from_source(target: Target, crt_static: bool) -> BuildManifest {
         "abseil",
         "mikktspace",
         "perfetto",
+        "webpdecoder",
     ]
     .into_iter()
     .map(|v| v.to_string())
     .collect();
 
     for lib in filament_link_libs.iter() {
+        let source = if lib == "webpdecoder" {
+            let filename = if cfg!(target_os = "windows") {
+                "libwebpdecoder.lib".to_owned()
+            } else {
+                static_lib_filename(lib)
+            };
+            filament_install_dir.join("lib").join(filename)
+        } else {
+            filament_native_lib.join(static_lib_filename(lib))
+        };
         fs::copy(
-            filament_native_lib.join(static_lib_filename(lib)),
+            source,
             library_out_dir.join(static_lib_filename(lib)),
         )
         .unwrap();

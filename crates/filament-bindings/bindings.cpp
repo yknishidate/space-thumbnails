@@ -346,6 +346,10 @@ extern "C" gltfio::TextureProvider* helper_gltfio_create_ktx2_provider(filament:
     return gltfio::createKtx2Provider(engine);
 }
 
+extern "C" gltfio::TextureProvider* helper_gltfio_create_webp_provider(filament::Engine* engine) {
+    return gltfio::createWebpProvider(engine);
+}
+
 extern "C" void helper_gltfio_texture_provider_delete(gltfio::TextureProvider* provider) {
     delete provider;
 }

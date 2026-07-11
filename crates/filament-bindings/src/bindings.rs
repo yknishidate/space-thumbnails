@@ -22703,6 +22703,11 @@ unsafe extern "C" {
     ) -> *mut filament_gltfio_TextureProvider;
 }
 unsafe extern "C" {
+    pub fn helper_gltfio_create_webp_provider(
+        engine: *mut filament_Engine,
+    ) -> *mut filament_gltfio_TextureProvider;
+}
+unsafe extern "C" {
     pub fn helper_gltfio_texture_provider_delete(provider: *mut filament_gltfio_TextureProvider);
 }
 unsafe extern "C" {

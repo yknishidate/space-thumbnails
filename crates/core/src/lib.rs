@@ -1,7 +1,6 @@
 use core::panic;
 use std::{cell::Cell, ffi::OsStr, fs, path::Path, rc::Rc, time::Instant};
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use log::info;
 
 const PERF_TARGET: &'static str = "SpaceThumbnailsPerf";
@@ -275,6 +274,8 @@ impl SpaceThumbnailsRenderer {
         self.destroy_opened_asset();
 
         let binary = matches!(Path::new(filename).extension(), Some(e) if e == "glb");
+        let requires_jit_materials =
+            gltf_uses_extension(data, binary, "KHR_materials_sheen");
 
         // Current Filament gltfio handles EXT_meshopt_compression directly.
         let load_as_binary = binary;
@@ -309,7 +310,14 @@ impl SpaceThumbnailsRenderer {
         let filepath_str = filepath.and_then(|p| p.to_str().map(|s| s.to_owned()));
 
         unsafe {
-            let materials = MaterialProvider::create_ubershader_loader(&mut self.engine)?;
+            // The precompiled archive does not contain every valid Sheen
+            // combination. Use JIT only when needed so ordinary thumbnails
+            // retain the much faster ubershader path.
+            let materials = if requires_jit_materials {
+                MaterialProvider::create_material_generator(&mut self.engine, false)?
+            } else {
+                MaterialProvider::create_ubershader_loader(&mut self.engine)?
+            };
             let mut entity_manager = self.engine.get_entity_manager()?;
             let mut transform_manager = self.engine.get_transform_manager()?;
             let mut loader = AssetLoader::create(AssetConfiguration {
@@ -495,6 +503,24 @@ fn is_base64_data_uri(uri: &str) -> bool {
     uri.starts_with("data:") && uri.find(";base64,").is_some()
 }
 
+fn gltf_uses_extension(data: &[u8], binary: bool, extension: &str) -> bool {
+    let json = if binary {
+        match extract_glb_json_chunk(data) {
+            Some(json) => json,
+            None => return false,
+        }
+    } else {
+        data
+    };
+
+    serde_json::from_slice::<serde_json::Value>(json)
+        .ok()
+        .and_then(|root| root.get("extensionsUsed").cloned())
+        .and_then(|extensions| extensions.as_array().cloned())
+        .map(|extensions| extensions.iter().any(|value| value.as_str() == Some(extension)))
+        .unwrap_or(false)
+}
+
 enum SanitizedGltf {
     /// Nothing to change, use the original bytes.
     Unchanged,
@@ -511,7 +537,6 @@ enum SanitizedGltf {
 /// models stay far below these limits.
 const MAX_GLTF_NODES: usize = 8192;
 const MAX_GLTF_PRIMITIVES: usize = 4096;
-const MAX_DECOMPRESSED_GLTF_BUFFER_BYTES: usize = 300 * 1024 * 1024;
 
 fn sanitize_gltf(data: &[u8], binary: bool) -> SanitizedGltf {
     if binary {
@@ -618,29 +643,6 @@ fn extract_glb_json_chunk(data: &[u8]) -> Option<&[u8]> {
         return None;
     }
     data.get(20..20 + chunk_len)
-}
-
-/// Returns the first BIN chunk of a GLB container.
-fn extract_glb_bin_chunk(data: &[u8]) -> Option<&[u8]> {
-    if data.len() < 20 || &data[0..4] != b"glTF" {
-        return None;
-    }
-
-    let declared_len = u32::from_le_bytes(data[8..12].try_into().ok()?) as usize;
-    let end = declared_len.min(data.len());
-    let mut offset = 12usize;
-    while offset.checked_add(8)? <= end {
-        let chunk_len = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
-        let chunk_type = &data[offset + 4..offset + 8];
-        let chunk_start = offset.checked_add(8)?;
-        let chunk_end = chunk_start.checked_add(chunk_len)?;
-        let chunk = data.get(chunk_start..chunk_end)?;
-        if chunk_type == b"BIN\0" {
-            return Some(chunk);
-        }
-        offset = chunk_end;
-    }
-    None
 }
 
 /// Rebuilds a GLB container with a replacement JSON chunk, keeping all

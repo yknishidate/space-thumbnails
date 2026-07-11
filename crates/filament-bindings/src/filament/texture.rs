@@ -178,6 +178,7 @@ impl Texture {
         TextureFormat::from(bindgen::filament_Texture_getFormat(self.native()))
     }
 
+    #[cfg(any())]
     #[inline]
     pub unsafe fn set_image<T: 'static>(
         &mut self,
@@ -194,6 +195,7 @@ impl Texture {
         self
     }
 
+    #[cfg(any())]
     #[inline]
     pub unsafe fn set_image_offset_size<T: 'static>(
         &mut self,
@@ -218,6 +220,7 @@ impl Texture {
         self
     }
 
+    #[cfg(any())]
     #[inline]
     pub unsafe fn set_image_offset_size_depth<T: 'static>(
         &mut self,
@@ -248,6 +251,7 @@ impl Texture {
 
     // TODO: set image face offset
 
+    #[cfg(any())]
     #[inline]
     pub unsafe fn set_external_image(
         &mut self,
@@ -258,6 +262,7 @@ impl Texture {
         self
     }
 
+    #[cfg(any())]
     #[inline]
     pub unsafe fn set_external_image_plane(
         &mut self,

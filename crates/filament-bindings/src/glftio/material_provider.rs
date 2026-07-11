@@ -7,22 +7,22 @@ use crate::{
 
 #[repr(transparent)]
 pub struct MaterialProvider {
-    native: ptr::NonNull<bindgen::gltfio_MaterialProvider>,
+    native: ptr::NonNull<bindgen::filament_gltfio_MaterialProvider>,
 }
 
 impl MaterialProvider {
     #[inline]
-    pub fn native(&self) -> *const bindgen::gltfio_MaterialProvider {
+    pub fn native(&self) -> *const bindgen::filament_gltfio_MaterialProvider {
         self.native.as_ptr()
     }
 
     #[inline]
-    pub fn native_mut(&mut self) -> *mut bindgen::gltfio_MaterialProvider {
+    pub fn native_mut(&mut self) -> *mut bindgen::filament_gltfio_MaterialProvider {
         self.native.as_ptr()
     }
 
     #[inline]
-    pub fn try_from_native(native: *mut bindgen::gltfio_MaterialProvider) -> Option<Self> {
+    pub fn try_from_native(native: *mut bindgen::filament_gltfio_MaterialProvider) -> Option<Self> {
         let ptr = ptr::NonNull::new(native)?;
         Some(MaterialProvider { native: ptr })
     }

@@ -127,6 +127,7 @@ impl View {
         unsafe { AntiAliasing::from(bindgen::filament_View_getAntiAliasing(self.native())) }
     }
 
+    #[cfg(any())]
     #[inline]
     pub fn set_temporal_anti_aliasing_options(&mut self, options: TemporalAntiAliasingOptions) {
         unsafe {
@@ -137,6 +138,7 @@ impl View {
         }
     }
 
+    #[cfg(any())]
     #[inline]
     pub fn get_temporal_anti_aliasing_options(&self) -> Option<TemporalAntiAliasingOptions> {
         unsafe {

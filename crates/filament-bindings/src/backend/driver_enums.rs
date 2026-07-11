@@ -300,5 +300,5 @@ pub enum PrimitiveType {
     TRIANGLES = bindgen::filament_backend_PrimitiveType_TRIANGLES,
     TRIANGLE_STRIP = bindgen::filament_backend_PrimitiveType_TRIANGLE_STRIP,
     #[num_enum(default)]
-    NONE = bindgen::filament_backend_PrimitiveType_NONE,
+    NONE = u8::MAX,
 }

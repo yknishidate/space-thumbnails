@@ -24,30 +24,19 @@ impl TextureSampler {
         padding1: u8,
         padding2: u8,
     ) -> Self {
-        Self {
-            native: bindgen::filament_TextureSampler {
-                mSamplerParams: bindgen::filament_backend_SamplerParams {
-                    __bindgen_anon_1: bindgen::filament_backend_SamplerParams__bindgen_ty_1 {
-                        __bindgen_anon_1: bindgen::filament_backend_SamplerParams__bindgen_ty_1__bindgen_ty_1 {
-                            _bitfield_1: bindgen::filament_backend_SamplerParams__bindgen_ty_1__bindgen_ty_1::new_bitfield_1(
-                                filter_mag.into(),
-                                filter_min.into(),
-                                wrap_s.into(),
-                                wrap_t.into(),
-                                wrap_r.into(),
-                                anisotropy_log2,
-                                compare_mode.into(),
-                                padding0,
-                                compare_func.into(),
-                                padding1,
-                                padding2,
-                            ),
-                            ..Default::default()
-                        }
-                    }
-                },
-            },
-        }
+        let mut params = bindgen::filament_backend_SamplerParams::default();
+        params.set_filterMag(filter_mag.into());
+        params.set_filterMin(filter_min.into());
+        params.set_wrapS(wrap_s.into());
+        params.set_wrapT(wrap_t.into());
+        params.set_wrapR(wrap_r.into());
+        params.set_anisotropyLog2(anisotropy_log2);
+        params.set_compareMode(compare_mode.into());
+        params.set_padding0(padding0);
+        params.set_compareFunc(compare_func.into());
+        params.set_padding1(padding1);
+        params.set_padding2(padding2);
+        Self { native: bindgen::filament_TextureSampler { mSamplerParams: params } }
     }
 
     #[inline]
@@ -56,10 +45,13 @@ impl TextureSampler {
     }
 
     #[inline]
-    pub fn native_params(
-        &self,
-    ) -> bindgen::filament_backend_SamplerParams__bindgen_ty_1__bindgen_ty_1 {
-        unsafe { self.native.mSamplerParams.__bindgen_anon_1.__bindgen_anon_1 }
+    pub fn native_params(&self) -> &bindgen::filament_backend_SamplerParams {
+        &self.native.mSamplerParams
+    }
+
+    #[inline]
+    fn native_params_mut(&mut self) -> &mut bindgen::filament_backend_SamplerParams {
+        &mut self.native.mSamplerParams
     }
 
     #[inline]
@@ -69,7 +61,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_filter_mag(&mut self, val: SamplerMagFilter) {
-        self.native_params().set_filterMag(val.into())
+        self.native_params_mut().set_filterMag(val.into())
     }
 
     #[inline]
@@ -79,7 +71,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_filter_min(&mut self, val: SamplerMinFilter) {
-        self.native_params().set_filterMin(val.into())
+        self.native_params_mut().set_filterMin(val.into())
     }
 
     #[inline]
@@ -89,7 +81,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_wrap_s(&mut self, val: SamplerWrapMode) {
-        self.native_params().set_wrapS(val.into())
+        self.native_params_mut().set_wrapS(val.into())
     }
 
     #[inline]
@@ -99,7 +91,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_wrap_t(&mut self, val: SamplerWrapMode) {
-        self.native_params().set_wrapT(val.into())
+        self.native_params_mut().set_wrapT(val.into())
     }
 
     #[inline]
@@ -109,7 +101,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_wrap_r(&mut self, val: SamplerWrapMode) {
-        self.native_params().set_wrapR(val.into())
+        self.native_params_mut().set_wrapR(val.into())
     }
 
     #[inline]
@@ -119,7 +111,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_anisotropy_log2(&mut self, val: u8) {
-        self.native_params().set_anisotropyLog2(val)
+        self.native_params_mut().set_anisotropyLog2(val)
     }
 
     #[inline]
@@ -129,7 +121,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_compare_mode(&mut self, val: SamplerCompareMode) {
-        self.native_params().set_compareMode(val.into())
+        self.native_params_mut().set_compareMode(val.into())
     }
 
     #[inline]
@@ -139,7 +131,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_padding0(&mut self, val: u8) {
-        self.native_params().set_padding0(val)
+        self.native_params_mut().set_padding0(val)
     }
 
     #[inline]
@@ -149,7 +141,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_compare_func(&mut self, val: SamplerCompareFunc) {
-        self.native_params().set_compareFunc(val.into())
+        self.native_params_mut().set_compareFunc(val.into())
     }
 
     #[inline]
@@ -159,7 +151,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_padding1(&mut self, val: u8) {
-        self.native_params().set_padding1(val)
+        self.native_params_mut().set_padding1(val)
     }
 
     #[inline]
@@ -169,7 +161,7 @@ impl TextureSampler {
 
     #[inline]
     pub fn set_padding2(&mut self, val: u8) {
-        self.native_params().set_padding2(val)
+        self.native_params_mut().set_padding2(val)
     }
 }
 

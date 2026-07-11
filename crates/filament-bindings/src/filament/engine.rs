@@ -36,10 +36,8 @@ impl Engine {
 
     #[inline]
     pub unsafe fn create(backend: Backend) -> Option<Engine> {
-        Self::try_from_native(bindgen::filament_Engine_create(
-            backend.into(),
-            ptr::null_mut(),
-            ptr::null_mut(),
+        Self::try_from_native(bindgen::helper_filament_engine_create(
+            backend.into(), ptr::null_mut(),
         ))
     }
 
@@ -48,10 +46,8 @@ impl Engine {
         backend: Backend,
         shared_gl_context: *mut core::ffi::c_void,
     ) -> Option<Engine> {
-        Self::try_from_native(bindgen::filament_Engine_create(
-            backend.into(),
-            ptr::null_mut(),
-            shared_gl_context,
+        Self::try_from_native(bindgen::helper_filament_engine_create(
+            backend.into(), shared_gl_context,
         ))
     }
 
@@ -182,7 +178,7 @@ impl Engine {
     }
     #[inline]
     pub unsafe fn destroy_index_buffer(&mut self, p: &mut IndexBuffer) -> bool {
-        bindgen::filament_Engine_destroy5(self.native_mut(), p.native_mut())
+        bindgen::filament_Engine_destroy6(self.native_mut(), p.native_mut())
     }
     // #[inline]
     // pub unsafe fn destroy_skinning_buffer(&mut self, p: SkinningBuffer) -> bool {
@@ -194,27 +190,27 @@ impl Engine {
     // }
     #[inline]
     pub unsafe fn destroy_indirect_light(&mut self, p: &mut IndirectLight) -> bool {
-        bindgen::filament_Engine_destroy8(self.native_mut(), p.native_mut())
-    }
-    #[inline]
-    pub unsafe fn destroy_material(&mut self, p: &mut Material) -> bool {
         bindgen::filament_Engine_destroy9(self.native_mut(), p.native_mut())
     }
     #[inline]
-    pub unsafe fn destroy_material_instance(&mut self, p: &mut MaterialInstance) -> bool {
+    pub unsafe fn destroy_material(&mut self, p: &mut Material) -> bool {
         bindgen::filament_Engine_destroy10(self.native_mut(), p.native_mut())
     }
     #[inline]
-    pub unsafe fn destroy_renderer(&mut self, p: &mut Renderer) -> bool {
+    pub unsafe fn destroy_material_instance(&mut self, p: &mut MaterialInstance) -> bool {
         bindgen::filament_Engine_destroy11(self.native_mut(), p.native_mut())
     }
     #[inline]
-    pub unsafe fn destroy_scene(&mut self, p: &mut Scene) -> bool {
+    pub unsafe fn destroy_renderer(&mut self, p: &mut Renderer) -> bool {
         bindgen::filament_Engine_destroy12(self.native_mut(), p.native_mut())
     }
     #[inline]
-    pub unsafe fn destroy_skybox(&mut self, p: &mut Skybox) -> bool {
+    pub unsafe fn destroy_scene(&mut self, p: &mut Scene) -> bool {
         bindgen::filament_Engine_destroy13(self.native_mut(), p.native_mut())
+    }
+    #[inline]
+    pub unsafe fn destroy_skybox(&mut self, p: &mut Skybox) -> bool {
+        bindgen::filament_Engine_destroy14(self.native_mut(), p.native_mut())
     }
     // #[inline]
     // pub unsafe fn destroy_color_grading(&mut self, p: ColorGrading) -> bool {
@@ -222,7 +218,7 @@ impl Engine {
     // }
     #[inline]
     pub unsafe fn destroy_swap_chain(&mut self, p: &mut SwapChain) -> bool {
-        bindgen::filament_Engine_destroy15(self.native_mut(), p.native_mut())
+        bindgen::filament_Engine_destroy16(self.native_mut(), p.native_mut())
     }
     // #[inline]
     // pub unsafe fn destroy_stream(&mut self, p: Stream) -> bool {
@@ -230,7 +226,7 @@ impl Engine {
     // }
     #[inline]
     pub unsafe fn destroy_texture(&mut self, p: &mut Texture) -> bool {
-        bindgen::filament_Engine_destroy17(self.native_mut(), p.native_mut())
+        bindgen::filament_Engine_destroy18(self.native_mut(), p.native_mut())
     }
     // #[inline]
     // pub unsafe fn destroy_render_target(&mut self, p: RenderTarget) -> bool {
@@ -238,11 +234,11 @@ impl Engine {
     // }
     #[inline]
     pub unsafe fn destroy_view(&mut self, p: &mut View) -> bool {
-        bindgen::filament_Engine_destroy19(self.native_mut(), p.native_mut())
+        bindgen::filament_Engine_destroy20(self.native_mut(), p.native_mut())
     }
     #[inline]
     pub unsafe fn destroy_entity_components(&mut self, e: &Entity) {
-        bindgen::filament_Engine_destroy20(self.native_mut(), e.native_owned())
+        bindgen::filament_Engine_destroy22(self.native_mut(), e.native_owned())
     }
     #[inline]
     pub unsafe fn flush_and_wait(&mut self) {

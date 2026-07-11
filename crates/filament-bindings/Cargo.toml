@@ -15,7 +15,6 @@ exclude = ["/filament"]
 doctest = false
 
 [build-dependencies]
-bindgen = "0.59"
 serde_json = "1.0"
 tar = "0.4"
 serde = { version = "1.0", features = ["derive"] }
@@ -26,7 +25,7 @@ num_cpus = "1.13"
 cc = "1.0"
 
 [features]
-default = ["prebuilt", "assimp"]
+default = ["assimp"]
 # Controls only Filament's prebuilt binaries. Assimp is maintained and built
 # independently by the vendored russimp-sys-static crate.
 prebuilt = []

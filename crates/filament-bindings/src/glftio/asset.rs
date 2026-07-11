@@ -5,43 +5,43 @@ use crate::{bindgen, filament::Aabb, utils::Entity};
 
 #[repr(transparent)]
 pub struct GltfAsset {
-    native: ptr::NonNull<bindgen::gltfio_FilamentAsset>,
+    native: ptr::NonNull<bindgen::filament_gltfio_FilamentAsset>,
 }
 
 impl GltfAsset {
     #[inline]
-    pub fn native(&self) -> *const bindgen::gltfio_FilamentAsset {
+    pub fn native(&self) -> *const bindgen::filament_gltfio_FilamentAsset {
         self.native.as_ptr()
     }
 
     #[inline]
-    pub fn native_mut(&mut self) -> *mut bindgen::gltfio_FilamentAsset {
+    pub fn native_mut(&mut self) -> *mut bindgen::filament_gltfio_FilamentAsset {
         self.native.as_ptr()
     }
 
     #[inline]
-    pub fn try_from_native(native: *mut bindgen::gltfio_FilamentAsset) -> Option<Self> {
+    pub fn try_from_native(native: *mut bindgen::filament_gltfio_FilamentAsset) -> Option<Self> {
         let ptr = ptr::NonNull::new(native)?;
         Some(GltfAsset { native: ptr })
     }
 
     pub unsafe fn get_entities(&self) -> &[Entity] {
-        let ptr = bindgen::gltfio_FilamentAsset_getEntities(self.native());
-        let len = bindgen::gltfio_FilamentAsset_getEntityCount(self.native());
+        let ptr = bindgen::filament_gltfio_FilamentAsset_getEntities(self.native());
+        let len = bindgen::filament_gltfio_FilamentAsset_getEntityCount(self.native());
 
         slice::from_raw_parts(ptr as *const _, len)
     }
 
     pub unsafe fn get_light_entities(&self) -> &[Entity] {
-        let ptr = bindgen::gltfio_FilamentAsset_getLightEntities(self.native());
-        let len = bindgen::gltfio_FilamentAsset_getLightEntityCount(self.native());
+        let ptr = bindgen::filament_gltfio_FilamentAsset_getLightEntities(self.native());
+        let len = bindgen::filament_gltfio_FilamentAsset_getLightEntityCount(self.native());
 
         slice::from_raw_parts(ptr as *const _, len)
     }
 
     pub unsafe fn get_camera_entities(&self) -> &[Entity] {
-        let ptr = bindgen::gltfio_FilamentAsset_getCameraEntities(self.native());
-        let len = bindgen::gltfio_FilamentAsset_getCameraEntityCount(self.native());
+        let ptr = bindgen::filament_gltfio_FilamentAsset_getCameraEntities(self.native());
+        let len = bindgen::filament_gltfio_FilamentAsset_getCameraEntityCount(self.native());
 
         slice::from_raw_parts(ptr as *const _, len)
     }
@@ -54,13 +54,13 @@ impl GltfAsset {
     }
 
     pub unsafe fn pop_renderables(&mut self) -> Vec<Entity> {
-        let len = bindgen::gltfio_FilamentAsset_popRenderables(
+        let len = bindgen::filament_gltfio_FilamentAsset_popRenderables(
             self.native_mut(),
             core::ptr::null_mut(),
             0,
         );
         let mut result = vec![Entity::dangling(); len];
-        bindgen::gltfio_FilamentAsset_popRenderables(
+        bindgen::filament_gltfio_FilamentAsset_popRenderables(
             self.native_mut(),
             result.as_mut_ptr() as *mut _,
             len,
@@ -70,8 +70,8 @@ impl GltfAsset {
     }
 
     pub unsafe fn get_resource_uris(&self) -> Result<Vec<String>, Utf8Error> {
-        let ptr = bindgen::gltfio_FilamentAsset_getResourceUris(self.native());
-        let len = bindgen::gltfio_FilamentAsset_getResourceUriCount(self.native());
+        let ptr = bindgen::filament_gltfio_FilamentAsset_getResourceUris(self.native());
+        let len = bindgen::filament_gltfio_FilamentAsset_getResourceUriCount(self.native());
 
         let ptrs = core::slice::from_raw_parts(ptr, len);
 
@@ -94,7 +94,7 @@ impl GltfAsset {
     }
 
     pub unsafe fn get_name(&self, entity: Entity) -> Result<String, Utf8Error> {
-        CStr::from_ptr(bindgen::gltfio_FilamentAsset_getName(
+        CStr::from_ptr(bindgen::filament_gltfio_FilamentAsset_getName(
             self.native(),
             entity.native_owned(),
         ))
@@ -112,7 +112,7 @@ impl GltfAsset {
     // TODO: getEngine
 
     pub unsafe fn release_source_data(&mut self) {
-        bindgen::gltfio_FilamentAsset_releaseSourceData(self.native_mut())
+        bindgen::filament_gltfio_FilamentAsset_releaseSourceData(self.native_mut())
     }
 
     // TODO: getSourceAsset

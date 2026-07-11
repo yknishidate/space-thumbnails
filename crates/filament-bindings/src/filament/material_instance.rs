@@ -184,6 +184,7 @@ impl MaterialInstance {
         math::Mat3f
     );
 
+    #[cfg(any())]
     #[inline]
     pub unsafe fn set_texture_parameter(
         &mut self,
@@ -210,11 +211,11 @@ impl MaterialInstance {
         value: Float3,
     ) -> Result<&mut Self, ffi::NulError> {
         let c_name = ffi::CString::new(name.as_ref())?;
-        bindgen::filament_MaterialInstance_setParameter1(
+        bindgen::helper_material_instance_setParameter_rgb(
             self.native_mut(),
             c_name.as_ptr(),
             rgb_type.into(),
-            value.native_owned(),
+            value.native_ptr(),
         );
         Ok(self)
     }
@@ -227,11 +228,11 @@ impl MaterialInstance {
         value: Float4,
     ) -> Result<&mut Self, ffi::NulError> {
         let c_name = ffi::CString::new(name.as_ref())?;
-        bindgen::filament_MaterialInstance_setParameter2(
+        bindgen::helper_material_instance_setParameter_rgba(
             self.native_mut(),
             c_name.as_ptr(),
             rgb_type.into(),
-            value.native_owned(),
+            value.native_ptr(),
         );
         Ok(self)
     }

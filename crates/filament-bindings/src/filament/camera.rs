@@ -169,7 +169,7 @@ impl Camera {
 
     #[inline]
     pub unsafe fn get_projection_matrix(&self) -> Mat4 {
-        Mat4::from_native(bindgen::filament_Camera_getProjectionMatrix(self.native()))
+        Mat4::from_native(bindgen::filament_Camera_getProjectionMatrix(self.native(), 0))
     }
 
     #[inline]
@@ -181,12 +181,12 @@ impl Camera {
 
     #[inline]
     pub unsafe fn get_near(&self) -> f32 {
-        bindgen::filament_Camera_getNear(self.native())
+        bindgen::filament_Camera_getNear(self.native()) as f32
     }
 
     #[inline]
     pub unsafe fn get_culling_far(&self) -> f32 {
-        bindgen::filament_Camera_getCullingFar(self.native())
+        bindgen::filament_Camera_getCullingFar(self.native()) as f32
     }
 
     #[inline]
@@ -201,7 +201,7 @@ impl Camera {
 
     #[inline]
     pub unsafe fn look_at_up(&mut self, eye: &Float3, center: &Float3, up: &Float3) {
-        bindgen::filament_Camera_lookAt(
+        bindgen::helper_filament_camera_look_at(
             self.native_mut(),
             eye.native_ptr(),
             center.native_ptr(),
@@ -211,7 +211,10 @@ impl Camera {
 
     #[inline]
     pub unsafe fn look_at(&mut self, eye: &Float3, center: &Float3) {
-        bindgen::filament_Camera_lookAt1(self.native_mut(), eye.native_ptr(), center.native_ptr())
+        let up = Float3::from([0.0, 1.0, 0.0]);
+        bindgen::helper_filament_camera_look_at(
+            self.native_mut(), eye.native_ptr(), center.native_ptr(), up.native_ptr(),
+        )
     }
 
     #[inline]
@@ -226,7 +229,7 @@ impl Camera {
 
     #[inline]
     pub unsafe fn get_position(&self) -> Float3 {
-        Float3::from_native(bindgen::filament_Camera_getPosition(self.native()))
+        Float3::from_native(bindgen::helper_filament_camera_get_position(self.native()))
     }
 
     #[inline]

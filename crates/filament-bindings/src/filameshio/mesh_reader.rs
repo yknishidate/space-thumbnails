@@ -31,6 +31,7 @@ impl MeshReader {
         let native_mesh = bindgen::filamesh_MeshReader_loadMeshFromBuffer1(
             engine.native_mut(),
             data.as_ptr() as *const _,
+            data.len(),
             None,
             std::ptr::null_mut(),
             default_material.native_mut(),

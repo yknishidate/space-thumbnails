@@ -1,5 +1,3 @@
-extern crate bindgen;
-
 mod build_support;
 
 use std::{
@@ -9,7 +7,7 @@ use std::{
     time::SystemTime,
 };
 
-use build_support::{download, path_regex_escape, run_command, static_lib_filename, Target};
+use build_support::{download, run_command, static_lib_filename, Target};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use serde::{Deserialize, Serialize};
 
@@ -129,7 +127,6 @@ fn build_from_source(target: Target, crt_static: bool) -> BuildManifest {
         "filabridge",
         "filaflat",
         "smol-v",
-        "vkshaders",
         "geometry",
         "ibl",
         "utils",
@@ -138,10 +135,18 @@ fn build_from_source(target: Target, crt_static: bool) -> BuildManifest {
         "image",
         "gltfio",
         "gltfio_core",
-        "gltfio_resources",
         "filamat",
         "shaders",
         "dracodec",
+        "stb",
+        "ktxreader",
+        "uberarchive",
+        "uberzlib",
+        "basis_transcoder",
+        "zstd",
+        "abseil",
+        "mikktspace",
+        "perfetto",
     ]
     .into_iter()
     .map(|v| v.to_string())
@@ -183,55 +188,9 @@ fn build_from_source(target: Target, crt_static: bool) -> BuildManifest {
 
     println!("cargo:rerun-if-changed=bindings.cpp");
 
-    let mut bindgen = bindgen::Builder::default()
-        .clang_arg("-x")
-        .clang_arg("c++")
-        .clang_arg("-std=c++17")
-        .clang_arg(format!("-I{}", filament_include.display()))
-        .use_core()
-        .size_t_is_usize(true)
-        .header("bindings.cpp")
-        .disable_header_comment()
-        .allowlist_type("filament.*")
-        .allowlist_type("utils.*")
-        .allowlist_type("filamesh.*")
-        .allowlist_type("gltfio.*")
-        .allowlist_type("image.*")
-        .allowlist_function("helper_.*")
-        .opaque_type("std::basic_string")
-        .opaque_type("std::basic_string_value_type")
-        .opaque_type("std::unique_ptr")
-        .raw_line(include_str!("src/fix.rs"))
-        .layout_tests(true)
-        .derive_default(true)
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
-        .clang_arg("-v");
-
-    let block_file = |bindgen: bindgen::Builder, lib, file| {
-        bindgen.blocklist_file(path_regex_escape(
-            filament_include.join(lib).join(file).to_str().unwrap(),
-        ))
-    };
-
-    bindgen = block_file(bindgen, "utils", "Slice.h");
-    bindgen = block_file(bindgen, "math", "vec2.h");
-    bindgen = block_file(bindgen, "math", "vec3.h");
-    bindgen = block_file(bindgen, "math", "vec4.h");
-    bindgen = block_file(bindgen, "math", "quat.h");
-    bindgen = block_file(bindgen, "math", "mat2.h");
-    bindgen = block_file(bindgen, "math", "mat3.h");
-    bindgen = block_file(bindgen, "math", "mat4.h");
-    bindgen = block_file(bindgen, "math", "mathfwd.h");
-    bindgen = block_file(bindgen, "math", "TMatHelpers.h");
-    bindgen = block_file(bindgen, "math", "TQuatHelpers.h");
-    bindgen = block_file(bindgen, "math", "TVecHelpers.h");
-
-    let bindings = bindgen.generate().expect("Unable to generate bindings");
-
-    let bindings_code = bindings.to_string();
-
     let bindings_rs = out_dir.join("bindings.rs");
-    fs::write(&bindings_rs, bindings_code).expect("Couldn't write bindings!");
+    fs::copy("src/bindings.rs", &bindings_rs).expect("Couldn't copy committed bindings");
+    println!("cargo:rerun-if-changed=src/bindings.rs");
 
     BuildManifest {
         link_search_dir: library_out_dir,
@@ -291,6 +250,7 @@ fn install(manifest: &BuildManifest) {
         println!("cargo:rustc-link-lib={}", "user32");
         println!("cargo:rustc-link-lib={}", "opengl32");
         println!("cargo:rustc-link-lib={}", "shlwapi");
+        println!("cargo:rustc-link-lib={}", "shell32");
     }
 
     // Write the bindings to the src/bindings.rs file.

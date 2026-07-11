@@ -71,3 +71,10 @@ Space Thumbnails saving the logs in `Windows Events`. To view the logs, you can 
 © 2022 [EYHN](https://github.com/EYHN)
 
 Please see [LICENSE](./LICENSE).
+
+## Fork notes
+
+This fork includes a few additional improvements:
+
+- Improved rendering performance when processing many files.
+- Fixed crashes encountered while rendering glTF/GLB files.

@@ -309,6 +309,13 @@ impl SpaceThumbnailsRenderer {
                 );
                 return None;
             }
+            SanitizedGltf::UnsupportedMeshopt => {
+                info!(
+                    target: PERF_TARGET,
+                    "gltf rejected, EXT_meshopt_compression is unsupported by the bundled filament"
+                );
+                return None;
+            }
             SanitizedGltf::Unchanged => data,
         };
 
@@ -510,6 +517,9 @@ enum SanitizedGltf {
     /// filament version (its handle arena is a compile-time constant and
     /// overflowing it crashes with an access violation).
     TooComplex { nodes: usize, primitives: usize },
+    /// Refuse to render: the bundled Filament crashes while loading resources
+    /// for EXT_meshopt_compression assets.
+    UnsupportedMeshopt,
 }
 
 /// The bundled filament crashes when its handle arena overflows
@@ -547,6 +557,20 @@ fn sanitize_gltf_json(json_bytes: &[u8]) -> SanitizedGltf {
         // let the regular loader report the parse error
         Err(_) => return SanitizedGltf::Unchanged,
     };
+
+    let uses_meshopt = root
+        .get("bufferViews")
+        .and_then(|views| views.as_array())
+        .map(|views| {
+            views.iter().any(|view| {
+                view.pointer("/extensions/EXT_meshopt_compression")
+                    .is_some()
+            })
+        })
+        .unwrap_or(false);
+    if uses_meshopt {
+        return SanitizedGltf::UnsupportedMeshopt;
+    }
 
     let nodes = root
         .get("nodes")

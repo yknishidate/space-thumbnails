@@ -264,7 +264,8 @@ impl SpaceThumbnailsRenderer {
             self.destroy_asset = Some(Box::new(move |engine, scene| {
                 scene.remove_entities(asset.get_renderables());
                 scene.remove_entity(asset.get_root_entity());
-                asset.destroy(engine)
+                // note: "destory" is the (misspelled) method name in filament-bindings
+                asset.destory(engine)
             }));
         }
 
@@ -283,6 +284,33 @@ impl SpaceThumbnailsRenderer {
         self.destroy_opened_asset();
 
         let binary = matches!(Path::new(filename).extension(), Some(e) if e == "glb");
+
+        // morph targets crash the bundled filament version inside
+        // ResourceLoader::loadResources (access violation), so strip them and
+        // render the base mesh instead
+        let sanitized_data;
+        let data = match sanitize_gltf(data, binary) {
+            SanitizedGltf::Stripped(clean) => {
+                info!(
+                    target: PERF_TARGET,
+                    "gltf morph targets stripped ({} -> {} bytes)",
+                    data.len(),
+                    clean.len()
+                );
+                sanitized_data = clean;
+                sanitized_data.as_slice()
+            }
+            SanitizedGltf::TooComplex { nodes, primitives } => {
+                info!(
+                    target: PERF_TARGET,
+                    "gltf rejected, too complex for the bundled filament (nodes: {}, primitives: {})",
+                    nodes,
+                    primitives
+                );
+                return None;
+            }
+            SanitizedGltf::Unchanged => data,
+        };
 
         let filepath_str = filepath.and_then(|p| p.to_str().map(|s| s.to_owned()));
 
@@ -308,21 +336,24 @@ impl SpaceThumbnailsRenderer {
             let has_external_resource = uris
                 .map(|uris| uris.into_iter().any(|uri| !is_base64_data_uri(&uri)))
                 .unwrap_or(false);
+            info!(target: PERF_TARGET, "gltf checked resource uris (external: {})", has_external_resource);
 
             if filepath_str.is_none() && has_external_resource {
                 return None;
             }
 
             let resources_start = Instant::now();
-            ResourceLoader::create(ResourceConfiguration {
+            let mut resource_loader = ResourceLoader::create(ResourceConfiguration {
                 engine: &mut self.engine,
                 gltf_path: filepath_str,
                 normalize_skinning_weights: true,
                 recompute_bounding_boxes: false,
                 ignore_bind_transform: false,
             })
-            .unwrap()
-            .load_resources(&mut asset);
+            .unwrap();
+            info!(target: PERF_TARGET, "gltf resource loader created");
+            resource_loader.load_resources(&mut asset);
+            info!(target: PERF_TARGET, "gltf resources loaded");
 
             asset.release_source_data();
             info!(
@@ -429,8 +460,9 @@ impl Drop for SpaceThumbnailsRenderer {
             let mut entity_manager = self.engine.get_entity_manager().unwrap();
             self.engine.destroy_entity_components(&self.camera_entity);
             self.engine.destroy_entity_components(&self.sunlight_entity);
-            entity_manager.destroy(&mut self.camera_entity);
-            entity_manager.destroy(&mut self.sunlight_entity);
+            // note: "destory" is the (misspelled) method name in filament-bindings
+            entity_manager.destory(&mut self.camera_entity);
+            entity_manager.destory(&mut self.sunlight_entity);
             self.engine.destroy_texture(&mut self.ibl_texture);
             self.engine.destroy_indirect_light(&mut self.ibl);
             self.engine.destroy_scene(&mut self.scene);
@@ -467,6 +499,152 @@ fn fit_into_unit_cube(bounds: &Aabb) -> Mat4f {
 
 fn is_base64_data_uri(uri: &str) -> bool {
     uri.starts_with("data:") && uri.find(";base64,").is_some()
+}
+
+enum SanitizedGltf {
+    /// Nothing to change, use the original bytes.
+    Unchanged,
+    /// Morph targets were stripped, use these bytes instead.
+    Stripped(Vec<u8>),
+    /// Refuse to render: the model exceeds the capacity of the bundled
+    /// filament version (its handle arena is a compile-time constant and
+    /// overflowing it crashes with an access violation).
+    TooComplex { nodes: usize, primitives: usize },
+}
+
+/// The bundled filament crashes when its handle arena overflows
+/// (NodePerformanceTest with 10k nodes reproduces this); real thumbnail
+/// models stay far below these limits.
+const MAX_GLTF_NODES: usize = 8192;
+const MAX_GLTF_PRIMITIVES: usize = 4096;
+
+fn sanitize_gltf(data: &[u8], binary: bool) -> SanitizedGltf {
+    if binary {
+        match extract_glb_json_chunk(data) {
+            Some(json) => match sanitize_gltf_json(json) {
+                SanitizedGltf::Stripped(sanitized_json) => {
+                    match rebuild_glb(data, &sanitized_json) {
+                        Some(glb) => SanitizedGltf::Stripped(glb),
+                        None => SanitizedGltf::Unchanged,
+                    }
+                }
+                other => other,
+            },
+            None => SanitizedGltf::Unchanged,
+        }
+    } else {
+        sanitize_gltf_json(data)
+    }
+}
+
+/// Checks model complexity and removes morph targets
+/// (`meshes[].primitives[].targets`), the associated default weights and
+/// `extras` (cgltf parses `targetNames` from there), and animations (they may
+/// reference the removed targets) from a glTF JSON document.
+fn sanitize_gltf_json(json_bytes: &[u8]) -> SanitizedGltf {
+    let mut root: serde_json::Value = match serde_json::from_slice(json_bytes) {
+        Ok(root) => root,
+        // let the regular loader report the parse error
+        Err(_) => return SanitizedGltf::Unchanged,
+    };
+
+    let nodes = root
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .map(|n| n.len())
+        .unwrap_or(0);
+    let primitives = root
+        .get("meshes")
+        .and_then(|m| m.as_array())
+        .map(|meshes| {
+            meshes
+                .iter()
+                .filter_map(|mesh| mesh.get("primitives").and_then(|p| p.as_array()))
+                .map(|p| p.len())
+                .sum()
+        })
+        .unwrap_or(0);
+    if nodes > MAX_GLTF_NODES || primitives > MAX_GLTF_PRIMITIVES {
+        return SanitizedGltf::TooComplex { nodes, primitives };
+    }
+
+    let mut modified = false;
+
+    if let Some(meshes) = root.get_mut("meshes").and_then(|m| m.as_array_mut()) {
+        for mesh in meshes {
+            let mut mesh_modified = false;
+            if let Some(primitives) = mesh.get_mut("primitives").and_then(|p| p.as_array_mut()) {
+                for primitive in primitives {
+                    if let Some(obj) = primitive.as_object_mut() {
+                        if obj.remove("targets").is_some() {
+                            mesh_modified = true;
+                        }
+                    }
+                }
+            }
+            if mesh_modified {
+                if let Some(obj) = mesh.as_object_mut() {
+                    obj.remove("weights");
+                    obj.remove("extras");
+                }
+                modified = true;
+            }
+        }
+    }
+
+    if !modified {
+        return SanitizedGltf::Unchanged;
+    }
+
+    if let Some(nodes) = root.get_mut("nodes").and_then(|n| n.as_array_mut()) {
+        for node in nodes {
+            if let Some(obj) = node.as_object_mut() {
+                obj.remove("weights");
+            }
+        }
+    }
+    if let Some(obj) = root.as_object_mut() {
+        obj.remove("animations");
+    }
+
+    match serde_json::to_vec(&root) {
+        Ok(bytes) => SanitizedGltf::Stripped(bytes),
+        Err(_) => SanitizedGltf::Unchanged,
+    }
+}
+
+/// Returns the JSON chunk of a GLB container.
+fn extract_glb_json_chunk(data: &[u8]) -> Option<&[u8]> {
+    if data.len() < 20 || &data[0..4] != b"glTF" {
+        return None;
+    }
+    let chunk_len = u32::from_le_bytes(data[12..16].try_into().ok()?) as usize;
+    if &data[16..20] != b"JSON" {
+        return None;
+    }
+    data.get(20..20 + chunk_len)
+}
+
+/// Rebuilds a GLB container with a replacement JSON chunk, keeping all
+/// following chunks (BIN, ...) as-is.
+fn rebuild_glb(original: &[u8], new_json: &[u8]) -> Option<Vec<u8>> {
+    let old_chunk_len = u32::from_le_bytes(original[12..16].try_into().ok()?) as usize;
+    let rest = original.get(20 + old_chunk_len..)?;
+
+    // the JSON chunk must be 4-byte aligned, padded with trailing spaces
+    let padded_len = (new_json.len() + 3) & !3;
+    let total_len = 12 + 8 + padded_len + rest.len();
+
+    let mut glb = Vec::with_capacity(total_len);
+    glb.extend_from_slice(&original[0..8]); // magic + version
+    glb.extend_from_slice(&(total_len as u32).to_le_bytes());
+    glb.extend_from_slice(&(padded_len as u32).to_le_bytes());
+    glb.extend_from_slice(b"JSON");
+    glb.extend_from_slice(new_json);
+    glb.resize(glb.len() + (padded_len - new_json.len()), b' ');
+    glb.extend_from_slice(rest);
+
+    Some(glb)
 }
 
 #[cfg(test)]

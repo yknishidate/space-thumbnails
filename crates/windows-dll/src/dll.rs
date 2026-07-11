@@ -90,6 +90,7 @@ pub extern "stdcall" fn DllMain(
 ) -> bool {
     if reason == DLL_PROCESS_ATTACH {
         crate::logging::init("Space Thumbnails", log::Level::Trace);
+        crate::crash::install();
 
         unsafe {
             DLL_INSTANCE = dll_instance;

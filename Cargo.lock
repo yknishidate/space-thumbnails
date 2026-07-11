@@ -1248,6 +1248,7 @@ dependencies = [
  "filament-bindings",
  "image",
  "log",
+ "serde_json",
  "test-results",
 ]
 

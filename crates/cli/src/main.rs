@@ -98,7 +98,10 @@ fn main() {
                 }
             };
 
-            renderer.load_asset_from_file(input).unwrap();
+            if renderer.load_asset_from_file(input).is_none() {
+                eprintln!("error: failed to load model: {}", input.display());
+                std::process::exit(1);
+            }
             let mut screenshot_buffer = vec![0; renderer.get_screenshot_size_in_byte()];
             renderer.take_screenshot_sync(screenshot_buffer.as_mut_slice());
 

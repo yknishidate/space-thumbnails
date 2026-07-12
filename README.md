@@ -78,6 +78,7 @@ This fork includes a few additional improvements:
 
 - Improved thumbnail rendering performance for large batches of files.
 - Added thumbnail rendering support for MaterialX (`.mtlx`) materials.
+  ![](https://github.com/user-attachments/assets/e1265381-0ffe-4ace-b8ed-f402959239f7)
 - Fixed crashes when rendering glTF/GLB files.
 - Fixed rendering issues with some FBX files.
 - Fixed blank thumbnails for some DAE files.

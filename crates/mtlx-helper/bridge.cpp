@@ -122,7 +122,7 @@ extern "C" int32_t mtlx_render_thumbnail(
         renderer->setImageHandler(imageHandler);
 
         // Preview geometry: the MaterialX shader ball, scaled so its bounding
-        // sphere fits the default camera (eye at (0, 0, 3), 45 degree FOV).
+        // sphere fits the 45 degree camera view.
         mx::GeometryHandlerPtr geomHandler = renderer->getGeometryHandler();
         geomHandler->addLoader(mx::CgltfLoader::create());
         mx::FilePath geomPath = searchPath.find("resources/Geometry/shaderball.glb");
@@ -143,6 +143,14 @@ extern "C" int32_t mtlx_render_thumbnail(
                 mx::Matrix44::createTranslation(center * -1.0f) *
                 mx::Matrix44::createScale(mx::Vector3(fit, fit, fit)));
         }
+
+        // Use an elevated three-quarter view instead of the default head-on
+        // camera.  Keep the eye roughly three units from the normalized ball
+        // so its framing remains consistent with MaterialX's default view.
+        renderer->getCamera()->setViewMatrix(mx::Camera::createViewMatrix(
+            mx::Vector3(1.5f, 1.1f, 2.3f),
+            mx::Vector3(0.0f, 0.0f, 0.0f),
+            mx::Vector3(0.0f, 1.0f, 0.0f)));
 
         // Lighting: direct light rig + split environment maps, like the viewer.
         mx::LightHandlerPtr lightHandler = mx::LightHandler::create();

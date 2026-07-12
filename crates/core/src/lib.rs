@@ -6,6 +6,7 @@ use log::info;
 const PERF_TARGET: &'static str = "SpaceThumbnailsPerf";
 
 use filament_bindings::{
+    alembic::AlembicAsset,
     assimp::{post_process, AssimpAsset},
     backend::{Backend, PixelBufferDescriptor, PixelDataFormat, PixelDataType},
     filament::{
@@ -171,6 +172,17 @@ impl SpaceThumbnailsRenderer {
                 filepath.as_ref().file_name()?,
                 Some(filepath.as_ref()),
             )
+        } else if matches!(filepath.as_ref().extension(), Some(e) if e == "abc") {
+            let start = Instant::now();
+            let asset = match AlembicAsset::from_file(&mut self.engine, &filepath) {
+                Ok(asset) => asset,
+                Err(error) => {
+                    log::warn!(target: PERF_TARGET, "alembic import failed: {error}");
+                    return None;
+                }
+            };
+            info!(target: PERF_TARGET, "alembic import from file: {:.2?}", start.elapsed());
+            self.load_alembic_asset(asset)
         } else {
             let start = Instant::now();
             let asset =
@@ -194,6 +206,17 @@ impl SpaceThumbnailsRenderer {
         if matches!(Path::new(filename.as_ref()).extension(), Some(e) if e == "gltf" || e == "glb")
         {
             self.load_gltf_asset(buffer, filename.as_ref(), None)
+        } else if matches!(Path::new(filename.as_ref()).extension(), Some(e) if e == "abc") {
+            let start = Instant::now();
+            let asset = match AlembicAsset::from_memory(&mut self.engine, buffer) {
+                Ok(asset) => asset,
+                Err(error) => {
+                    log::warn!(target: PERF_TARGET, "alembic memory import failed: {error}");
+                    return None;
+                }
+            };
+            info!(target: PERF_TARGET, "alembic import from memory: {:.2?}", start.elapsed());
+            self.load_alembic_asset(asset)
         } else {
             let start = Instant::now();
             let format_hint = Path::new(filename.as_ref())
@@ -260,6 +283,50 @@ impl SpaceThumbnailsRenderer {
         }
 
         info!(target: PERF_TARGET, "scene setup (assimp): {:.2?}", start.elapsed());
+
+        Some(self)
+    }
+
+    pub fn load_alembic_asset(&mut self, mut asset: AlembicAsset) -> Option<&mut Self> {
+        let start = Instant::now();
+        self.destroy_opened_asset();
+
+        unsafe {
+            let aabb = asset.get_aabb();
+            info!(
+                target: PERF_TARGET,
+                "alembic bounds: min={:?}, max={:?}",
+                aabb.min.vec,
+                aabb.max.vec
+            );
+            let transform = fit_into_unit_cube(aabb);
+
+            let mut transform_manager = self.engine.get_transform_manager()?;
+            let root_entity = asset.get_root_entity();
+            let root_transform_instance = transform_manager.get_instance(root_entity)?;
+            transform_manager.set_transform_float(&root_transform_instance, &transform);
+
+            self.scene.add_entities(asset.get_renderables());
+            self.scene.add_entity(root_entity);
+
+            let mut camera = self
+                .engine
+                .get_camera_component(&self.camera_entity)
+                .unwrap();
+
+            camera.set_exposure_physical(16.0, 1.0 / 125.0, 100.0);
+
+            setup_camera_surround_view(&mut camera, &aabb.transform(transform), &self.viewport);
+
+            self.destroy_asset = Some(Box::new(move |engine, scene| {
+                scene.remove_entities(asset.get_renderables());
+                scene.remove_entity(asset.get_root_entity());
+                // note: "destory" is the (misspelled) method name in filament-bindings
+                asset.destory(engine)
+            }));
+        }
+
+        info!(target: PERF_TARGET, "scene setup (alembic): {:.2?}", start.elapsed());
 
         Some(self)
     }

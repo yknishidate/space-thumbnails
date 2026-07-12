@@ -36,6 +36,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "alembic-sys"
+version = "1.0.2"
+dependencies = [
+ "cc",
+ "num_cpus",
+]
+
+[[package]]
 name = "atty"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -555,6 +563,7 @@ dependencies = [
 name = "filament-bindings"
 version = "0.2.2"
 dependencies = [
+ "alembic-sys",
  "bitflags",
  "cc",
  "flate2",
@@ -1413,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "russimp-sys-static"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "flate2",
  "num_cpus",
@@ -1562,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "filament-bindings",
  "image",
@@ -1573,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails-cli"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "clap",
  "env_logger",
@@ -1584,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails-mtlx-dll"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "humantime",
  "log",
@@ -1595,7 +1604,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails-mtlx-helper"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "cc",
  "image",
@@ -1604,7 +1613,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails-windows"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "image",
  "lazy_static",
@@ -1615,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails-windows-dll"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "eventlog",
  "humantime",
@@ -1627,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails-windows-installer"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "space-thumbnails-windows",
  "ureq",

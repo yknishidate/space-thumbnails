@@ -53,6 +53,14 @@ lazy_static! {
             GUID::from_u128(0x99ff43f0_d914_4a7a_8325_a8013995c41d),
             ".glb",
             space_thumbnails::RendererBackend::Vulkan
+        )),
+        // Alembic reads its Ogawa data straight from the in-memory stream
+        // (no external resources, no temp file), so it uses the isolated
+        // stream provider exactly like obj/fbx — the shell only invokes
+        // stream providers (not file providers) in the isolated surrogate.
+        Box::new(ThumbnailProvider::new(
+            GUID::from_u128(0x0d5f2b71_9c3a_4e88_a6d4_1f7e2c9b4a60),
+            ".abc",
         ))
     ];
 }

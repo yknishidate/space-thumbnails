@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "russimp-sys-static"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "flate2",
  "num_cpus",
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "filament-bindings",
  "image",
@@ -1573,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails-cli"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "clap",
  "env_logger",
@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails-windows"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "image",
  "lazy_static",
@@ -1595,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails-windows-dll"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "eventlog",
  "humantime",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "space-thumbnails-windows-installer"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "space-thumbnails-windows",
  "ureq",

@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo/target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+
+      # Fails fast if the tag and the version embedded in the MSI
+      # (space-thumbnails-windows-installer's Cargo.toml) got out of sync.
+      - name: Check tag matches installer version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $expected = $tag.TrimStart('v')
+          $metadata = cargo metadata --no-deps --format-version=1 | ConvertFrom-Json
+          $actual = ($metadata.packages | Where-Object { $_.name -eq 'space-thumbnails-windows-installer' }).version
+          if ($actual -ne $expected) {
+            Write-Error "Tag $tag (expects version $expected) does not match space-thumbnails-windows-installer version $actual"
+            exit 1
+          }
+
+      - name: Build DLL (release)
+        run: cargo build --release -p space-thumbnails-windows-dll
+
+      - name: Build MSI installer
+        run: cargo run --release -p space-thumbnails-windows-installer
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/installer/space-thumbnails-installer.msi
+          generate_release_notes: true

@@ -4,3 +4,6 @@
 [submodule "crates/filament-bindings/filament"]
 	path = crates/filament-bindings/filament
 	url = https://github.com/google/filament.git
+[submodule "crates/mtlx-helper/MaterialX"]
+	path = crates/mtlx-helper/MaterialX
+	url = https://github.com/AcademySoftwareFoundation/MaterialX

@@ -22,7 +22,7 @@ features = [
   "Win32_Graphics_Gdi",
   "Win32_Foundation",
   "Win32_UI_Shell",
-  "Win32_UI_Shell_PropertiesSystem"
+  "Win32_UI_Shell_PropertiesSystem",
 ]
 
 [build-dependencies]

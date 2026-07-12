@@ -1583,6 +1583,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "space-thumbnails-mtlx-dll"
+version = "1.0.2"
+dependencies = [
+ "humantime",
+ "log",
+ "space-thumbnails-windows",
+ "windows",
+ "winreg",
+]
+
+[[package]]
+name = "space-thumbnails-mtlx-helper"
+version = "1.0.2"
+dependencies = [
+ "cc",
+ "image",
+ "num_cpus",
+]
+
+[[package]]
 name = "space-thumbnails-windows"
 version = "1.0.2"
 dependencies = [

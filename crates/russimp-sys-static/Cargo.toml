@@ -1,6 +1,6 @@
 [package]
 name = "russimp-sys-static"
-version = "1.0.2"
+version = "1.0.3"
 authors = ["EYHN"]
 edition = "2018"
 license-file = "LICENSE"

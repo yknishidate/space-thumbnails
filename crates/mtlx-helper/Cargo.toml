@@ -1,6 +1,6 @@
 [package]
 name = "space-thumbnails-mtlx-helper"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 
 [[bin]]

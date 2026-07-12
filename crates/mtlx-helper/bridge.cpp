@@ -52,6 +52,77 @@ mx::DocumentPtr load_standard_library(const mx::FileSearchPath& searchPath,
     return cachedLibrary;
 }
 
+bool canonicalize_simple_gltf_pbr(const mx::DocumentPtr& doc)
+{
+    std::vector<mx::NodePtr> shaders = doc->getNodes("gltf_pbr");
+    std::vector<mx::NodePtr> materials = doc->getNodes("surfacematerial");
+    if (shaders.size() != 1 || materials.size() != 1)
+    {
+        return false;
+    }
+    mx::NodePtr shader = shaders[0];
+    for (mx::InputPtr input : shader->getInputs())
+    {
+        if (input->getConnectedNode() || !input->getNodeName().empty() ||
+            !input->getOutputString().empty())
+        {
+            return false;
+        }
+    }
+
+    mx::NodePtr material = materials[0];
+    mx::InputPtr surfaceInput = material->getInput("surfaceshader");
+    if (!surfaceInput)
+    {
+        return false;
+    }
+    shader->setName("SR_thumbnail");
+    material->setName("Material_thumbnail");
+    surfaceInput->setConnectedNode(shader);
+    return true;
+}
+
+void remove_public_uniform_initializers(const mx::ShaderPtr& shader)
+{
+    std::string source = shader->getSourceCode(mx::Stage::PIXEL);
+    const size_t blockStart = source.find("// Uniform block: PublicUniforms");
+    const size_t blockEnd = source.find("\nin VertexData", blockStart);
+    if (blockStart == std::string::npos || blockEnd == std::string::npos)
+    {
+        return;
+    }
+    size_t lineStart = source.find('\n', blockStart) + 1;
+    while (lineStart < blockEnd)
+    {
+        size_t lineEnd = source.find('\n', lineStart);
+        size_t equals = source.find(" = ", lineStart);
+        size_t semicolon = source.find(';', lineStart);
+        if (equals < lineEnd && semicolon < lineEnd)
+        {
+            const size_t removed = semicolon - equals;
+            source.erase(equals, removed);
+            lineEnd -= removed;
+        }
+        lineStart = lineEnd + 1;
+    }
+    shader->setSourceCode(source, mx::Stage::PIXEL);
+}
+
+void bind_public_uniforms(const mx::GlslProgramPtr& program)
+{
+    const mx::VariableBlock& uniforms =
+        program->getShader()->getStage(mx::Stage::PIXEL)
+            .getUniformBlock(mx::HW::PUBLIC_UNIFORMS);
+    for (mx::ShaderPort* uniform : uniforms.getVariableOrder())
+    {
+        if (uniform->getValue() && uniform->getType() != mx::Type::FILENAME &&
+            uniform->getType() != mx::Type::STRING)
+        {
+            program->bindUniform(uniform->getVariable(), uniform->getValue(), false);
+        }
+    }
+}
+
 void set_error(char* err_buf, uint32_t err_buf_len, const std::string& message)
 {
     if (err_buf && err_buf_len > 0)
@@ -156,6 +227,7 @@ void render_with_environment(
     }
     program->getUniformsList();
     program->getAttributesList();
+    bind_public_uniforms(program);
     program->bindViewInformation(renderer->getCamera());
     program->bindTextures(imageHandler);
     program->bindLighting(lightHandler, imageHandler);
@@ -212,6 +284,7 @@ extern "C" int32_t mtlx_render_thumbnail(
         mx::DocumentPtr doc = mx::createDocument();
         mx::readFromXmlFile(doc, mtlx_path, searchPath);
         doc->setDataLibrary(stdLib);
+        const bool canonicalGltfPbr = canonicalize_simple_gltf_pbr(doc);
 
         std::vector<mx::TypedElementPtr> elems = mx::findRenderableElements(doc);
         if (elems.empty())
@@ -327,6 +400,10 @@ extern "C" int32_t mtlx_render_thumbnail(
 
         // Generate, compile, render.
         mx::ShaderPtr shader = generator->generate("thumbnail", elem, context);
+        if (canonicalGltfPbr)
+        {
+            remove_public_uniform_initializers(shader);
+        }
         renderer->createProgram(shader);
         renderer->validateInputs();
         renderer->setSize(size, size);

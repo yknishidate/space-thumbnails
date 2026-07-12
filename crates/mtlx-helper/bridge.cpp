@@ -37,6 +37,22 @@ namespace mx = MaterialX;
 namespace
 {
 
+mx::DocumentPtr load_standard_library(const mx::FileSearchPath& searchPath,
+                                      const std::string& dataRoot)
+{
+    // The server processes requests serially.  Standard definitions are
+    // immutable after loading, so retain their parsed document across jobs.
+    static std::string cachedDataRoot;
+    static mx::DocumentPtr cachedLibrary;
+    if (!cachedLibrary || cachedDataRoot != dataRoot)
+    {
+        cachedLibrary = mx::createDocument();
+        mx::loadLibraries({ "libraries" }, searchPath, cachedLibrary);
+        cachedDataRoot = dataRoot;
+    }
+    return cachedLibrary;
+}
+
 void set_error(char* err_buf, uint32_t err_buf_len, const std::string& message)
 {
     if (err_buf && err_buf_len > 0)
@@ -172,8 +188,8 @@ extern "C" int32_t mtlx_render_thumbnail(
         mx::FileSearchPath searchPath{ mx::FilePath(data_root) };
 
         // Standard node definition libraries.
-        mx::DocumentPtr stdLib = mx::createDocument();
-        mx::loadLibraries({ "libraries" }, searchPath, stdLib);
+        mx::DocumentPtr stdLib =
+            load_standard_library(searchPath, std::string(data_root));
 
         // Material document.
         mx::DocumentPtr doc = mx::createDocument();

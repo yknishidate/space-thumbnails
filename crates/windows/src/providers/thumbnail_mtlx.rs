@@ -2,15 +2,16 @@ use std::{
     cell::Cell,
     env,
     ffi::OsString,
-    fs, io,
+    io::{self, Read, Write},
     os::windows::prelude::OsStringExt,
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
-    process::Command,
-    sync::atomic::{AtomicU64, Ordering},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::{mpsc, Mutex},
     time::{Duration, Instant},
 };
 
+use lazy_static::lazy_static;
 use log::{info, warn};
 use windows::{
     core::{implement, IUnknown, Interface, GUID},
@@ -44,9 +45,9 @@ const HELPER_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Thumbnail provider for MaterialX (.mtlx) material documents.
 ///
-/// Unlike the model providers this one does not render in-process: it spawns
-/// the bundled helper executable (statically linked against MaterialX) and
-/// reads raw pixels back. The provider itself needs the real file path (for
+/// Unlike the model providers this one does not render in-process: it keeps a
+/// bundled helper process (statically linked against MaterialX) and exchanges
+/// framed requests and raw pixels over pipes. The provider itself needs the real file path (for
 /// `fileprefix`-relative texture resolution), hence `IInitializeWithFile` +
 /// `DisableProcessIsolation`, which makes it run inside the calling process
 /// (explorer.exe) — the helper-process split keeps GL/MaterialX crashes from
@@ -132,65 +133,118 @@ fn find_helper() -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
-static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+struct WorkerResponse {
+    status: i32,
+    payload: Vec<u8>,
+}
+
+struct MtlxWorker {
+    child: Child,
+    input: ChildStdin,
+    responses: mpsc::Receiver<io::Result<WorkerResponse>>,
+}
+
+impl MtlxWorker {
+    fn spawn(helper: &PathBuf) -> io::Result<Self> {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut child = Command::new(helper)
+            .arg("--server")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+        let input = child.stdin.take().unwrap();
+        let mut output = child.stdout.take().unwrap();
+        let (sender, responses) = mpsc::channel();
+        std::thread::spawn(move || loop {
+            let response = (|| {
+                let mut header = [0u8; 8];
+                output.read_exact(&mut header)?;
+                let status = i32::from_le_bytes(header[..4].try_into().unwrap());
+                let len = u32::from_le_bytes(header[4..].try_into().unwrap()) as usize;
+                if len > 4096 * 4096 * 4 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "oversized response",
+                    ));
+                }
+                let mut payload = vec![0u8; len];
+                output.read_exact(&mut payload)?;
+                Ok(WorkerResponse { status, payload })
+            })();
+            let failed = response.is_err();
+            if sender.send(response).is_err() || failed {
+                break;
+            }
+        });
+        Ok(Self {
+            child,
+            input,
+            responses,
+        })
+    }
+
+    fn render(&mut self, filepath: &str) -> io::Result<Vec<u8>> {
+        let path = filepath.as_bytes();
+        self.input.write_all(&(path.len() as u32).to_le_bytes())?;
+        self.input.write_all(&THUMBNAIL_SIZE.to_le_bytes())?;
+        self.input.write_all(path)?;
+        self.input.flush()?;
+
+        let response = self
+            .responses
+            .recv_timeout(HELPER_TIMEOUT)
+            .map_err(|err| {
+                let kind = if err == mpsc::RecvTimeoutError::Timeout {
+                    io::ErrorKind::TimedOut
+                } else {
+                    io::ErrorKind::BrokenPipe
+                };
+                io::Error::new(kind, err.to_string())
+            })??;
+        if response.status != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                String::from_utf8_lossy(&response.payload).into_owned(),
+            ));
+        }
+        if response.payload.len() != (THUMBNAIL_SIZE * THUMBNAIL_SIZE * 4) as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("helper returned {} bytes", response.payload.len()),
+            ));
+        }
+        Ok(response.payload)
+    }
+
+    fn terminate(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+lazy_static! {
+    static ref MTLX_WORKER: Mutex<Option<MtlxWorker>> = Mutex::new(None);
+}
 
 fn render_via_helper(filepath: &str) -> io::Result<Vec<u8>> {
     let helper = find_helper().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "mtlx helper executable not found")
     })?;
 
-    let temp_output = env::temp_dir().join(format!(
-        "space-thumbnails-mtlx-{}-{}.raw",
-        std::process::id(),
-        NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
-    ));
-
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut command = Command::new(&helper);
-    command
-        .arg("--input")
-        .arg(filepath)
-        .arg("--output")
-        .arg(&temp_output)
-        .arg("--size")
-        .arg(THUMBNAIL_SIZE.to_string())
-        .creation_flags(CREATE_NO_WINDOW);
-    if let Some(data_root) = env::var_os("SPACE_THUMBNAILS_MTLX_DATA") {
-        command.arg("--data-root").arg(data_root);
+    let mut slot = MTLX_WORKER
+        .lock()
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "worker lock poisoned"))?;
+    if slot.is_none() {
+        *slot = Some(MtlxWorker::spawn(&helper)?);
     }
-
-    let mut child = command.spawn()?;
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait()? {
-            Some(status) => break status,
-            None if start.elapsed() > HELPER_TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = fs::remove_file(&temp_output);
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "helper timed out"));
-            }
-            None => std::thread::sleep(Duration::from_millis(50)),
+    let result = slot.as_mut().unwrap().render(filepath);
+    if result.is_err() {
+        if let Some(worker) = slot.as_mut() {
+            worker.terminate();
         }
-    };
-
-    let result = if status.success() {
-        let pixels = fs::read(&temp_output)?;
-        if pixels.len() == (THUMBNAIL_SIZE * THUMBNAIL_SIZE * 4) as usize {
-            Ok(pixels)
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("helper wrote {} bytes", pixels.len()),
-            ))
-        }
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("helper exited with {:?}", status.code()),
-        ))
-    };
-    let _ = fs::remove_file(&temp_output);
+        *slot = None;
+    }
     result
 }
 

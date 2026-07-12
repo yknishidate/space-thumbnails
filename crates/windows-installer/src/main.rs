@@ -199,7 +199,10 @@ fn main() {
     // leaves the .mtlx shell association untouched.
     let mtlx_staging = out_dir.join("mtlx-data");
     stage_mtlx_data(
-        &project_dir.join("crates").join("mtlx-helper").join("MaterialX"),
+        &project_dir
+            .join("crates")
+            .join("mtlx-helper")
+            .join("MaterialX"),
         &mtlx_staging,
     );
 
@@ -273,10 +276,7 @@ fn main() {
     wix.push_str("    </Feature>\n");
     wix.push_str("    <Feature Id=\"MaterialXFeature\" Title=\"MaterialX (.mtlx) thumbnails\" Description=\"Renders MaterialX material documents on a preview shader ball. Adds about 19 MB.\" Level=\"1\" Absent=\"allow\" AllowAdvertise=\"no\">\n");
     for component_id in &mtlx_component_ids {
-        wix.push_str(&format!(
-            "      <ComponentRef Id=\"{}\" />\n",
-            component_id
-        ));
+        wix.push_str(&format!("      <ComponentRef Id=\"{}\" />\n", component_id));
     }
     wix.push_str("    </Feature>\n");
     wix.push_str("    <UIRef Id=\"WixUI_FeatureTree\" />\n");

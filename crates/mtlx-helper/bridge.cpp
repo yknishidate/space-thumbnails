@@ -30,7 +30,6 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
-#include <vector>
 
 namespace mx = MaterialX;
 
@@ -63,24 +62,42 @@ void set_error(char* err_buf, uint32_t err_buf_len, const std::string& message)
     }
 }
 
-void flip_image_vertically(const mx::ImagePtr& image)
+bool generate_environment_shader(
+    const mx::GlslMaterialPtr& material,
+    mx::GenContext& context,
+    const mx::FilePath& documentPath,
+    const mx::DocumentPtr& stdLib,
+    const mx::FilePath& imagePath)
 {
-    if (!image || !image->getResourceBuffer())
+    // Start with MaterialXView's standard environment graph, but invert the
+    // view direction's Y component before its lat-long projection.  This
+    // corrects the Stb/OpenGL vertical convention on the GPU without copying
+    // and flipping the multi-megabyte HDR image on every request.
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->setDataLibrary(stdLib);
+    mx::readFromXmlFile(doc, documentPath);
+    mx::NodeGraphPtr graph = doc->getNodeGraph("envMap");
+    if (!graph)
     {
-        return;
+        return false;
     }
-    const size_t rowBytes = image->getRowStride();
-    auto* pixels = static_cast<uint8_t*>(image->getResourceBuffer());
-    std::vector<uint8_t> row(rowBytes);
-    for (unsigned int y = 0; y < image->getHeight() / 2; ++y)
+    mx::NodePtr viewDirection = graph->getNode("viewDir");
+    mx::NodePtr image = graph->getNode("envImage");
+    mx::OutputPtr output = graph->getOutput("out");
+    if (!viewDirection || !image || !output)
     {
-        uint8_t* top = pixels + static_cast<size_t>(y) * rowBytes;
-        uint8_t* bottom =
-            pixels + static_cast<size_t>(image->getHeight() - 1 - y) * rowBytes;
-        std::memcpy(row.data(), top, rowBytes);
-        std::memcpy(top, bottom, rowBytes);
-        std::memcpy(bottom, row.data(), rowBytes);
+        return false;
     }
+
+    mx::NodePtr flip = graph->addNode("multiply", "flipViewDirection", "vector3");
+    flip->setConnectedNode("in1", viewDirection);
+    flip->setInputValue("in2", mx::Vector3(1.0f, -1.0f, 1.0f));
+    image->setConnectedNode("viewdir", flip);
+    image->setInputValue("file", imagePath.asString(), mx::FILENAME_TYPE_STRING);
+
+    material->setDocument(doc);
+    material->setElement(output);
+    return material->generateShader(context);
 }
 
 // MaterialXView's OpenGL environment-background pass, followed by the model
@@ -333,15 +350,9 @@ extern "C" int32_t mtlx_render_thumbnail(
                 searchPath.find("resources/Lights/environment_map.mtlx");
             mx::FilePath envBackgroundPath =
                 searchPath.find("resources/Lights/san_giuseppe_bridge.hdr");
-            // StbImageLoader preserves HDR scanline order, while the OpenGL
-            // lat-long background shader expects its origin at the opposite
-            // vertical edge.  Flip only the display map; the split lighting
-            // maps retain their existing orientation for reflections.
-            mx::ImagePtr envBackground =
-                imageHandler->acquireImage(envBackgroundPath);
-            flip_image_vertically(envBackground);
-            if (!envMaterial->generateEnvironmentShader(
-                    context, envMaterialPath, stdLib, envBackgroundPath))
+            if (!generate_environment_shader(envMaterial, context,
+                                             envMaterialPath, stdLib,
+                                             envBackgroundPath))
             {
                 set_error(err_buf, err_buf_len,
                           "failed to generate environment background shader");

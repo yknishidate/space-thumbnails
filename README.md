@@ -76,7 +76,8 @@ Please see [LICENSE](./LICENSE).
 
 This fork includes a few additional improvements:
 
-- Improved rendering performance when processing many files.
-- Fixed crashes encountered while rendering glTF/GLB files.
-- Fixed rendering errors encountered in FBX files.
-- Fixed empty thumbnails being generated for DAE files.
+- Improved thumbnail rendering performance for large batches of files.
+- Added thumbnail rendering support for MaterialX (`.mtlx`) materials.
+- Fixed crashes when rendering glTF/GLB files.
+- Fixed rendering issues with some FBX files.
+- Fixed blank thumbnails for some DAE files.

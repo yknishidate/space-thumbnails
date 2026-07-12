@@ -53,6 +53,7 @@ fn stage_mtlx_data(materialx_dir: &Path, staging_dir: &Path) {
         "resources/Lights/san_giuseppe_bridge.hdr",
         "resources/Lights/san_giuseppe_bridge_split.mtlx",
         "resources/Lights/san_giuseppe_bridge_split.hdr",
+        "resources/Lights/irradiance/san_giuseppe_bridge.hdr",
         "resources/Lights/irradiance/san_giuseppe_bridge_split.hdr",
         "LICENSE",
     ] {

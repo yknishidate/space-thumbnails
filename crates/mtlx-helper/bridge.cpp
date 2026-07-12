@@ -330,43 +330,35 @@ extern "C" int32_t mtlx_render_thumbnail(
         renderer->createProgram(shader);
         renderer->validateInputs();
         renderer->setSize(size, size);
-        const bool isTransparent = shader->hasAttribute(mx::HW::ATTR_TRANSPARENT);
-        if (isTransparent)
+        mx::GeometryHandlerPtr envGeometry = mx::GeometryHandler::create();
+        envGeometry->addLoader(mx::TinyObjLoader::create());
+        mx::FilePath envSpherePath =
+            searchPath.find("resources/Geometry/sphere.obj");
+        if (!envGeometry->loadGeometry(envSpherePath))
         {
-            mx::GeometryHandlerPtr envGeometry = mx::GeometryHandler::create();
-            envGeometry->addLoader(mx::TinyObjLoader::create());
-            mx::FilePath envSpherePath =
-                searchPath.find("resources/Geometry/sphere.obj");
-            if (!envGeometry->loadGeometry(envSpherePath))
-            {
-                set_error(err_buf, err_buf_len,
-                          "failed to load environment geometry: " +
-                              envSpherePath.asString());
-                return 1;
-            }
-
-            mx::GlslMaterialPtr envMaterial = mx::GlslMaterial::create();
-            mx::FilePath envMaterialPath =
-                searchPath.find("resources/Lights/environment_map.mtlx");
-            mx::FilePath envBackgroundPath =
-                searchPath.find("resources/Lights/san_giuseppe_bridge.hdr");
-            if (!generate_environment_shader(envMaterial, context,
-                                             envMaterialPath, stdLib,
-                                             envBackgroundPath))
-            {
-                set_error(err_buf, err_buf_len,
-                          "failed to generate environment background shader");
-                return 1;
-            }
-
-            render_with_environment(renderer, envMaterial, envGeometry,
-                                    imageHandler, searchPath, geomHandler,
-                                    lightHandler);
+            set_error(err_buf, err_buf_len,
+                        "failed to load environment geometry: " +
+                            envSpherePath.asString());
+            return 1;
         }
-        else
+
+        mx::GlslMaterialPtr envMaterial = mx::GlslMaterial::create();
+        mx::FilePath envMaterialPath =
+            searchPath.find("resources/Lights/environment_map.mtlx");
+        mx::FilePath envBackgroundPath =
+            searchPath.find("resources/Lights/irradiance/san_giuseppe_bridge.hdr");
+        if (!generate_environment_shader(envMaterial, context,
+                                            envMaterialPath, stdLib,
+                                            envBackgroundPath))
         {
-            renderer->render();
+            set_error(err_buf, err_buf_len,
+                        "failed to generate environment background shader");
+            return 1;
         }
+
+        render_with_environment(renderer, envMaterial, envGeometry,
+                                imageHandler, searchPath, geomHandler,
+                                lightHandler);
 
         mx::ImagePtr image = renderer->captureImage();
         if (!image || image->getChannelCount() != 4 ||

@@ -48,6 +48,9 @@ fn stage_mtlx_data(materialx_dir: &Path, staging_dir: &Path) {
 
     for relative in [
         "resources/Geometry/shaderball.glb",
+        "resources/Geometry/sphere.obj",
+        "resources/Lights/environment_map.mtlx",
+        "resources/Lights/san_giuseppe_bridge.hdr",
         "resources/Lights/san_giuseppe_bridge_split.mtlx",
         "resources/Lights/san_giuseppe_bridge_split.hdr",
         "resources/Lights/irradiance/san_giuseppe_bridge_split.hdr",
@@ -268,7 +271,7 @@ fn main() {
     wix.push_str("    <Feature Id=\"MainFeature\" Title=\"Space Thumbnails\" Description=\"Thumbnails for 3D model files (obj, fbx, stl, dae, ply, x3d, 3ds, gltf, glb).\" Level=\"1\" Absent=\"disallow\" AllowAdvertise=\"no\">\n");
     wix.push_str("      <ComponentRef Id=\"MainApplication\" />\n");
     wix.push_str("    </Feature>\n");
-    wix.push_str("    <Feature Id=\"MaterialXFeature\" Title=\"MaterialX (.mtlx) thumbnails\" Description=\"Renders MaterialX material documents on a preview shader ball. Adds about 12 MB.\" Level=\"1\" Absent=\"allow\" AllowAdvertise=\"no\">\n");
+    wix.push_str("    <Feature Id=\"MaterialXFeature\" Title=\"MaterialX (.mtlx) thumbnails\" Description=\"Renders MaterialX material documents on a preview shader ball. Adds about 19 MB.\" Level=\"1\" Absent=\"allow\" AllowAdvertise=\"no\">\n");
     for component_id in &mtlx_component_ids {
         wix.push_str(&format!(
             "      <ComponentRef Id=\"{}\" />\n",

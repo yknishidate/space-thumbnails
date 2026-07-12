@@ -10,6 +10,7 @@
 #include <MaterialXFormat/XmlIo.h>
 #include <MaterialXFormat/Util.h>
 #include <MaterialXGenShader/GenContext.h>
+#include <MaterialXGenShader/HwShaderGenerator.h>
 #include <MaterialXGenShader/Shader.h>
 #include <MaterialXGenShader/Util.h>
 #include <MaterialXGenShader/DefaultColorManagementSystem.h>
@@ -19,13 +20,17 @@
 #include <MaterialXRender/GeometryHandler.h>
 #include <MaterialXRender/LightHandler.h>
 #include <MaterialXRender/StbImageLoader.h>
+#include <MaterialXRender/TinyObjLoader.h>
 #include <MaterialXRender/Util.h>
+#include <MaterialXRenderGlsl/GlslMaterial.h>
 #include <MaterialXRenderGlsl/GlslRenderer.h>
 #include <MaterialXRenderGlsl/GLTextureHandler.h>
+#include <MaterialXRenderGlsl/External/Glad/glad.h>
 
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace mx = MaterialX;
 
@@ -40,6 +45,113 @@ void set_error(char* err_buf, uint32_t err_buf_len, const std::string& message)
         std::memcpy(err_buf, message.c_str(), count);
         err_buf[count] = '\0';
     }
+}
+
+void flip_image_vertically(const mx::ImagePtr& image)
+{
+    if (!image || !image->getResourceBuffer())
+    {
+        return;
+    }
+    const size_t rowBytes = image->getRowStride();
+    auto* pixels = static_cast<uint8_t*>(image->getResourceBuffer());
+    std::vector<uint8_t> row(rowBytes);
+    for (unsigned int y = 0; y < image->getHeight() / 2; ++y)
+    {
+        uint8_t* top = pixels + static_cast<size_t>(y) * rowBytes;
+        uint8_t* bottom =
+            pixels + static_cast<size_t>(image->getHeight() - 1 - y) * rowBytes;
+        std::memcpy(row.data(), top, rowBytes);
+        std::memcpy(top, bottom, rowBytes);
+        std::memcpy(bottom, row.data(), rowBytes);
+    }
+}
+
+// MaterialXView's OpenGL environment-background pass, followed by the model
+// pass from GlslRenderer::render.  This is used only for transparent shaders;
+// opaque thumbnails retain the simpler renderer path below.
+void render_with_environment(
+    const mx::GlslRendererPtr& renderer,
+    const mx::GlslMaterialPtr& envMaterial,
+    const mx::GeometryHandlerPtr& envGeometry,
+    const mx::ImageHandlerPtr& imageHandler,
+    const mx::FileSearchPath& searchPath,
+    const mx::GeometryHandlerPtr& geometryHandler,
+    const mx::LightHandlerPtr& lightHandler)
+{
+    mx::GLFramebufferPtr framebuffer = renderer->getFramebuffer();
+    framebuffer->bind();
+
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_FRAMEBUFFER_SRGB);
+    glDepthFunc(GL_LESS);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // Draw the HDRI as an environment sphere, exactly as MaterialXView does.
+    mx::CameraPtr envCamera = mx::Camera::create();
+    // MaterialXView uses 300 units with its longer far plane.  The thumbnail
+    // renderer's default far plane is 100, so keep the sphere comfortably
+    // inside it while remaining effectively infinite relative to the ball.
+    envCamera->setWorldMatrix(mx::Matrix44::createScale(mx::Vector3(50.0f)));
+    envCamera->setViewMatrix(renderer->getCamera()->getViewMatrix());
+    envCamera->setProjectionMatrix(renderer->getCamera()->getProjectionMatrix());
+
+    const mx::MeshList& envMeshes = envGeometry->getMeshes();
+    mx::MeshPartitionPtr envPart =
+        !envMeshes.empty() ? envMeshes[0]->getPartition(0) : nullptr;
+    if (envPart)
+    {
+        glDepthMask(GL_FALSE);
+        envMaterial->bindShader();
+        envMaterial->bindMesh(envMeshes[0]);
+        envMaterial->bindViewInformation(envCamera);
+        envMaterial->bindImages(imageHandler, searchPath, false);
+        envMaterial->drawPartition(envPart);
+        envMaterial->unbindImages(imageHandler);
+        envMaterial->unbindGeometry();
+        glDepthMask(GL_TRUE);
+    }
+
+    // Draw the shader ball using the same bindings and transparent two-sided
+    // pass as GlslRenderer::render.
+    mx::GlslProgramPtr program = renderer->getProgram();
+    if (!program || !program->bind())
+    {
+        framebuffer->unbind();
+        throw mx::ExceptionRenderError("Cannot bind material shader");
+    }
+    program->getUniformsList();
+    program->getAttributesList();
+    program->bindViewInformation(renderer->getCamera());
+    program->bindTextures(imageHandler);
+    program->bindLighting(lightHandler, imageHandler);
+    program->bindTimeAndFrame();
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    for (mx::MeshPtr mesh : geometryHandler->getMeshes())
+    {
+        program->bindMesh(mesh);
+        for (size_t i = 0; i < mesh->getPartitionCount(); ++i)
+        {
+            mx::MeshPartitionPtr part = mesh->getPartition(i);
+            program->bindPartition(part);
+            mx::MeshIndexBuffer& indices = part->getIndices();
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_FRONT);
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()),
+                           GL_UNSIGNED_INT, nullptr);
+            glCullFace(GL_BACK);
+            glDisable(GL_CULL_FACE);
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()),
+                           GL_UNSIGNED_INT, nullptr);
+        }
+    }
+    imageHandler->unbindImages();
+    program->unbind();
+    glDisable(GL_BLEND);
+    framebuffer->unbind();
 }
 
 } // anonymous namespace
@@ -102,6 +214,11 @@ extern "C" int32_t mtlx_render_thumbnail(
         mx::GenContext context(generator);
         context.registerSourceCodeSearchPath(searchPath);
         context.getOptions().targetDistanceUnit = "meter";
+        // GlslRenderer relies on this option to mark shaders that need alpha
+        // blending.  MaterialXView performs the same transparency analysis
+        // before generation.
+        context.getOptions().hwTransparency =
+            mx::isTransparentSurface(elem, generator->getTarget());
         // FIS (the default) generates a huge shader that takes seconds for the
         // GL driver to compile; the prefiltered environment method is what
         // MaterialXView uses by default and compiles far faster.
@@ -180,7 +297,49 @@ extern "C" int32_t mtlx_render_thumbnail(
         renderer->createProgram(shader);
         renderer->validateInputs();
         renderer->setSize(size, size);
-        renderer->render();
+        const bool isTransparent = shader->hasAttribute(mx::HW::ATTR_TRANSPARENT);
+        if (isTransparent)
+        {
+            mx::GeometryHandlerPtr envGeometry = mx::GeometryHandler::create();
+            envGeometry->addLoader(mx::TinyObjLoader::create());
+            mx::FilePath envSpherePath =
+                searchPath.find("resources/Geometry/sphere.obj");
+            if (!envGeometry->loadGeometry(envSpherePath))
+            {
+                set_error(err_buf, err_buf_len,
+                          "failed to load environment geometry: " +
+                              envSpherePath.asString());
+                return 1;
+            }
+
+            mx::GlslMaterialPtr envMaterial = mx::GlslMaterial::create();
+            mx::FilePath envMaterialPath =
+                searchPath.find("resources/Lights/environment_map.mtlx");
+            mx::FilePath envBackgroundPath =
+                searchPath.find("resources/Lights/san_giuseppe_bridge.hdr");
+            // StbImageLoader preserves HDR scanline order, while the OpenGL
+            // lat-long background shader expects its origin at the opposite
+            // vertical edge.  Flip only the display map; the split lighting
+            // maps retain their existing orientation for reflections.
+            mx::ImagePtr envBackground =
+                imageHandler->acquireImage(envBackgroundPath);
+            flip_image_vertically(envBackground);
+            if (!envMaterial->generateEnvironmentShader(
+                    context, envMaterialPath, stdLib, envBackgroundPath))
+            {
+                set_error(err_buf, err_buf_len,
+                          "failed to generate environment background shader");
+                return 1;
+            }
+
+            render_with_environment(renderer, envMaterial, envGeometry,
+                                    imageHandler, searchPath, geomHandler,
+                                    lightHandler);
+        }
+        else
+        {
+            renderer->render();
+        }
 
         mx::ImagePtr image = renderer->captureImage();
         if (!image || image->getChannelCount() != 4 ||

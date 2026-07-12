@@ -1,8 +1,10 @@
 mod thumbnail;
 mod thumbnail_file;
+mod thumbnail_mtlx;
 
 pub use thumbnail::*;
 pub use thumbnail_file::*;
+pub use thumbnail_mtlx::*;
 
 use crate::registry::RegistryKey;
 

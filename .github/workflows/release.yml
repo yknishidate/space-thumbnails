@@ -39,8 +39,8 @@ jobs:
             exit 1
           }
 
-      - name: Build DLL (release)
-        run: cargo build --release -p space-thumbnails-windows-dll
+      - name: Build DLLs and MaterialX helper (release)
+        run: cargo build --release -p space-thumbnails-windows-dll -p space-thumbnails-mtlx-dll -p space-thumbnails-mtlx-helper
 
       - name: Build MSI installer
         run: cargo run --release -p space-thumbnails-windows-installer

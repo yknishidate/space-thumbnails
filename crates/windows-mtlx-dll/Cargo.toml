@@ -1,0 +1,20 @@
+[package]
+name = "space-thumbnails-mtlx-dll"
+version = "1.0.2"
+edition = "2021"
+
+[dependencies]
+windows = { version = "0.34", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_LibraryLoader",
+  "Win32_System_SystemServices",
+  "Win32_UI_Shell",
+] }
+space-thumbnails-windows = { path = "../windows" }
+winreg = "0.10"
+log = { version = "0.4", features = ["std"] }
+humantime = "2"
+
+[lib]
+crate-type = ["cdylib"]

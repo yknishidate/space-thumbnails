@@ -1,6 +1,14 @@
 use windows::core::GUID;
 
-use crate::providers::{Provider, ThumbnailFileProvider, ThumbnailProvider};
+use crate::providers::{MtlxThumbnailProvider, Provider, ThumbnailFileProvider, ThumbnailProvider};
+
+/// MaterialX (.mtlx) provider. Deliberately NOT part of [`PROVIDERS`]: it is
+/// registered by the separate `space-thumbnails-mtlx-dll` module, which the
+/// installer ships as an optional feature.
+pub static MTLX_PROVIDER: MtlxThumbnailProvider = MtlxThumbnailProvider::new(
+    GUID::from_u128(0x2f882179_0e88_4738_b441_3b2991a58d0e),
+    ".mtlx",
+);
 
 lazy_static! {
     pub static ref PROVIDERS: Vec<Box<dyn Provider + 'static + Sync>> = vec![

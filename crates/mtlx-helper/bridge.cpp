@@ -52,15 +52,26 @@ mx::DocumentPtr load_standard_library(const mx::FileSearchPath& searchPath,
     return cachedLibrary;
 }
 
-bool canonicalize_simple_gltf_pbr(const mx::DocumentPtr& doc)
+bool canonicalize_simple_surface_material(const mx::DocumentPtr& doc)
 {
-    std::vector<mx::NodePtr> shaders = doc->getNodes("gltf_pbr");
     std::vector<mx::NodePtr> materials = doc->getNodes("surfacematerial");
-    if (shaders.size() != 1 || materials.size() != 1)
+    if (materials.size() != 1)
     {
         return false;
     }
-    mx::NodePtr shader = shaders[0];
+
+    mx::NodePtr material = materials[0];
+    mx::InputPtr surfaceInput = material->getInput("surfaceshader");
+    mx::NodePtr shader = surfaceInput ? surfaceInput->getConnectedNode() : nullptr;
+    if (!shader || shader->getParent() != doc ||
+        shader->getType() != mx::SURFACE_SHADER_TYPE_STRING)
+    {
+        return false;
+    }
+
+    // Only canonicalize a direct, constant-valued surface shader.  Texture
+    // graphs and other upstream networks retain their original generated
+    // program because their interfaces and topology can differ.
     for (mx::InputPtr input : shader->getInputs())
     {
         if (input->getConnectedNode() || !input->getNodeName().empty() ||
@@ -70,12 +81,6 @@ bool canonicalize_simple_gltf_pbr(const mx::DocumentPtr& doc)
         }
     }
 
-    mx::NodePtr material = materials[0];
-    mx::InputPtr surfaceInput = material->getInput("surfaceshader");
-    if (!surfaceInput)
-    {
-        return false;
-    }
     shader->setName("SR_thumbnail");
     material->setName("Material_thumbnail");
     surfaceInput->setConnectedNode(shader);
@@ -284,7 +289,7 @@ extern "C" int32_t mtlx_render_thumbnail(
         mx::DocumentPtr doc = mx::createDocument();
         mx::readFromXmlFile(doc, mtlx_path, searchPath);
         doc->setDataLibrary(stdLib);
-        const bool canonicalGltfPbr = canonicalize_simple_gltf_pbr(doc);
+        const bool canonicalSurface = canonicalize_simple_surface_material(doc);
 
         std::vector<mx::TypedElementPtr> elems = mx::findRenderableElements(doc);
         if (elems.empty())
@@ -400,7 +405,7 @@ extern "C" int32_t mtlx_render_thumbnail(
 
         // Generate, compile, render.
         mx::ShaderPtr shader = generator->generate("thumbnail", elem, context);
-        if (canonicalGltfPbr)
+        if (canonicalSurface)
         {
             remove_public_uniform_initializers(shader);
         }

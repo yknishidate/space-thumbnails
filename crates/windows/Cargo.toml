@@ -7,7 +7,6 @@ edition = "2021"
 crate-type = ["lib"]
 
 [dependencies]
-space-thumbnails = { path = "../core" }
 lazy_static = "1.4"
 log = "0.4"
 

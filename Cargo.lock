@@ -1612,13 +1612,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "space-thumbnails-render-helper"
+version = "1.0.3"
+dependencies = [
+ "log",
+ "space-thumbnails",
+]
+
+[[package]]
 name = "space-thumbnails-windows"
 version = "1.0.3"
 dependencies = [
  "image",
  "lazy_static",
  "log",
- "space-thumbnails",
  "windows",
 ]
 

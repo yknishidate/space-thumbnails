@@ -193,6 +193,21 @@ fn main() {
 
     wix.push_str("      </Component>\n");
 
+    // The out-of-process render helper: every model format (obj/fbx/.../gltf/
+    // glb/abc) is rendered here, isolated from explorer.exe. Required by the
+    // main feature.
+    wix.push_str(
+        "      <Component Id=\"RenderHelper\" Guid=\"85233035-9e13-443a-8e89-547075ff4a65\" Win64=\"yes\">\n",
+    );
+    wix.push_str(&format!(
+        "        <File Id=\"RenderHelperFile\" Source=\"{}\" KeyPath=\"yes\" Checksum=\"yes\"/>\n",
+        project_dir
+            .join("target\\release\\space-thumbnails-render-helper.exe")
+            .to_str()
+            .unwrap()
+    ));
+    wix.push_str("      </Component>\n");
+
     // --- Optional MaterialX (.mtlx) support -------------------------------
     // Separate provider DLL + statically linked helper renderer + the
     // MaterialX runtime data it needs, all grouped under one deselectable
@@ -272,8 +287,9 @@ fn main() {
 
     wix.push_str("    </DirectoryRef>\n");
 
-    wix.push_str("    <Feature Id=\"MainFeature\" Title=\"Space Thumbnails\" Description=\"Thumbnails for 3D model files (obj, fbx, stl, dae, ply, x3d, 3ds, gltf, glb).\" Level=\"1\" Absent=\"disallow\" AllowAdvertise=\"no\">\n");
+    wix.push_str("    <Feature Id=\"MainFeature\" Title=\"Space Thumbnails\" Description=\"Thumbnails for 3D model files (obj, fbx, stl, dae, ply, x3d, 3ds, gltf, glb, abc).\" Level=\"1\" Absent=\"disallow\" AllowAdvertise=\"no\">\n");
     wix.push_str("      <ComponentRef Id=\"MainApplication\" />\n");
+    wix.push_str("      <ComponentRef Id=\"RenderHelper\" />\n");
     wix.push_str("    </Feature>\n");
     wix.push_str("    <Feature Id=\"MaterialXFeature\" Title=\"MaterialX (.mtlx) thumbnails\" Description=\"Renders MaterialX material documents on a preview shader ball. Adds about 19 MB.\" Level=\"1\" Absent=\"allow\" AllowAdvertise=\"no\">\n");
     for component_id in &mtlx_component_ids {

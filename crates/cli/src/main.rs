@@ -98,7 +98,7 @@ fn main() {
                 }
             };
 
-            if renderer.load_asset_from_file(input).is_none() {
+            if renderer.load_asset_from_file(input).is_err() {
                 eprintln!("error: failed to load model: {}", input.display());
                 std::process::exit(1);
             }

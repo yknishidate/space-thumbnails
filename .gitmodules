@@ -7,3 +7,9 @@
 [submodule "crates/mtlx-helper/MaterialX"]
 	path = crates/mtlx-helper/MaterialX
 	url = https://github.com/AcademySoftwareFoundation/MaterialX
+[submodule "crates/alembic-sys/Imath"]
+	path = crates/alembic-sys/Imath
+	url = https://github.com/AcademySoftwareFoundation/Imath
+[submodule "crates/alembic-sys/alembic"]
+	path = crates/alembic-sys/alembic
+	url = https://github.com/alembic/alembic

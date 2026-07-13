@@ -6,8 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use log::info;
-use space_thumbnails::RendererBackend;
+use lazy_static::lazy_static;
+use log::{info, warn};
 use windows::{
     core::{implement, IUnknown, Interface, GUID},
     Win32::{
@@ -22,25 +22,43 @@ use windows::{
 
 use crate::{
     constant::{ERROR_256X256_ARGB, TIMEOUT_256X256_ARGB, TOOLARGE_256X256_ARGB},
+    helper_client::{find_helper, HelperClient, RenderResult},
     registry::{register_clsid, RegistryData, RegistryKey, RegistryValue},
-    render_worker::{render_with_timeout, RenderRequest, RenderSource},
     utils::create_argb_bitmap,
 };
 
 use super::Provider;
 
+const THUMBNAIL_SIZE: u32 = 256;
+const HELPER_EXE: &str = "space-thumbnails-render-helper.exe";
+const HELPER_OVERRIDE_ENV: &str = "SPACE_THUMBNAILS_RENDER_HELPER";
+/// The helper reuses its engine, but a cold start pays Filament init (~250ms)
+/// plus load/render; 8s is generous while still bounding a runaway file.
+const HELPER_TIMEOUT: Duration = Duration::from_secs(8);
+
+lazy_static! {
+    static ref RENDER_HELPER: Option<HelperClient> =
+        find_helper(HELPER_EXE, HELPER_OVERRIDE_ENV).map(|path| HelperClient::new(path, HELPER_TIMEOUT));
+}
+
+/// Thumbnail provider for every Filament-backed model format.
+///
+/// It runs in-process (`IInitializeWithFile` handlers are only invoked in the
+/// caller's process), but does no parsing or rendering itself — it forwards
+/// the real file path to the persistent out-of-process render helper and
+/// turns the returned pixels into a bitmap. All the crash-prone work is thus
+/// isolated in the helper, and formats with external resources (e.g. `.gltf`
+/// with sibling `.bin`/textures) resolve because the helper gets a real path.
 pub struct ThumbnailFileProvider {
     pub clsid: GUID,
     pub file_extension: &'static str,
-    pub backend: RendererBackend,
 }
 
 impl ThumbnailFileProvider {
-    pub fn new(clsid: GUID, file_extension: &'static str, backend: RendererBackend) -> Self {
+    pub fn new(clsid: GUID, file_extension: &'static str) -> Self {
         Self {
             clsid,
             file_extension,
-            backend,
         }
     }
 }
@@ -51,8 +69,10 @@ impl Provider for ThumbnailFileProvider {
     }
 
     fn register(&self, module_path: &str) -> Vec<crate::registry::RegistryKey> {
+        // DisableProcessIsolation=1: file handlers are only invoked in-process.
+        // Safe here because the in-process work is just IPC to the helper.
         let mut result = register_clsid(&self.clsid(), module_path, true);
-        result.append(&mut vec![RegistryKey {
+        result.push(RegistryKey {
             path: format!(
                 "{}\\ShellEx\\{{{:?}}}",
                 self.file_extension,
@@ -62,7 +82,7 @@ impl Provider for ThumbnailFileProvider {
                 "".to_owned(),
                 RegistryData::Str(format!("{{{:?}}}", &self.clsid())),
             )],
-        }]);
+        });
         result
     }
 
@@ -71,7 +91,7 @@ impl Provider for ThumbnailFileProvider {
         riid: *const windows::core::GUID,
         ppv_object: *mut *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
-        ThumbnailFileHandler::new(riid, ppv_object, self.backend)
+        ThumbnailFileHandler::new(riid, ppv_object)
     }
 }
 
@@ -81,22 +101,27 @@ impl Provider for ThumbnailFileProvider {
 )]
 pub struct ThumbnailFileHandler {
     filepath: Cell<String>,
-    backend: RendererBackend,
 }
 
 impl ThumbnailFileHandler {
     pub fn new(
         riid: *const GUID,
         ppv_object: *mut *mut core::ffi::c_void,
-        backend: RendererBackend,
     ) -> windows::core::Result<()> {
         let unknown: IUnknown = ThumbnailFileHandler {
             filepath: Cell::new(String::new()),
-            backend,
         }
         .into();
         unsafe { unknown.query(&*riid, ppv_object).ok() }
     }
+}
+
+unsafe fn write_image(image: &[u8], phbmp: *mut HBITMAP, pdwalpha: *mut WTS_ALPHATYPE) {
+    let mut p_bits: *mut core::ffi::c_void = core::ptr::null_mut();
+    let hbmp = create_argb_bitmap(256, 256, &mut p_bits);
+    std::ptr::copy(image.as_ptr(), p_bits as *mut _, image.len());
+    phbmp.write(hbmp);
+    pdwalpha.write(WTSAT_ARGB);
 }
 
 impl IThumbnailProvider_Impl for ThumbnailFileHandler {
@@ -107,7 +132,7 @@ impl IThumbnailProvider_Impl for ThumbnailFileHandler {
         pdwalpha: *mut WTS_ALPHATYPE,
     ) -> windows::core::Result<()> {
         let filepath = self.filepath.take();
-        let size = 256;
+        let size = THUMBNAIL_SIZE;
 
         if filepath.is_empty() {
             return Err(windows::core::Error::from(E_FAIL));
@@ -115,83 +140,62 @@ impl IThumbnailProvider_Impl for ThumbnailFileHandler {
 
         if matches!(fs::metadata(&filepath), Ok(metadata) if metadata.len() > 300 * 1024 * 1024 /* 300 MB */)
         {
-            unsafe {
-                let mut p_bits: *mut core::ffi::c_void = core::ptr::null_mut();
-                let hbmp = create_argb_bitmap(256, 256, &mut p_bits);
-                std::ptr::copy(
-                    TOOLARGE_256X256_ARGB.as_ptr(),
-                    p_bits as *mut _,
-                    TOOLARGE_256X256_ARGB.len(),
-                );
-                phbmp.write(hbmp);
-                pdwalpha.write(WTSAT_ARGB);
-            }
+            unsafe { write_image(TOOLARGE_256X256_ARGB, phbmp, pdwalpha) };
             return Ok(());
         }
 
         let start_time = Instant::now();
         info!(target: "ThumbnailFileProvider", "Getting thumbnail from file: {}", filepath);
 
-        let timeout_result = render_with_timeout(
-            RenderRequest {
-                backend: self.backend,
-                size,
-                source: RenderSource::File(filepath.clone()),
-            },
-            Duration::from_secs(5),
-        );
+        let helper = match RENDER_HELPER.as_ref() {
+            Some(helper) => helper,
+            None => {
+                warn!(target: "ThumbnailFileProvider", "render helper executable not found");
+                unsafe { write_image(ERROR_256X256_ARGB, phbmp, pdwalpha) };
+                return Ok(());
+            }
+        };
 
-        match timeout_result {
-            Ok(Some(screenshot_buffer)) => {
+        match helper.render(&filepath, size) {
+            Ok(RenderResult::Pixels(pixels)) if pixels.len() == (size * size * 4) as usize => {
                 info!(target: "ThumbnailFileProvider", "Rendering thumbnails success file: {}, Elapsed: {:.2?}", filepath, start_time.elapsed());
                 unsafe {
                     let mut p_bits: *mut core::ffi::c_void = core::ptr::null_mut();
                     let hbmp = create_argb_bitmap(size, size, &mut p_bits);
-                    for x in 0..size {
-                        for y in 0..size {
-                            let index = ((x * size + y) * 4) as usize;
-                            let r = screenshot_buffer[index];
-                            let g = screenshot_buffer[index + 1];
-                            let b = screenshot_buffer[index + 2];
-                            let a = screenshot_buffer[index + 3];
-                            (p_bits.add(((x * size + y) * 4) as usize) as *mut u32).write(
-                                (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | b as u32,
-                            )
-                        }
+                    for i in 0..(size * size) as usize {
+                        let r = pixels[i * 4];
+                        let g = pixels[i * 4 + 1];
+                        let b = pixels[i * 4 + 2];
+                        let a = pixels[i * 4 + 3];
+                        (p_bits as *mut u32).add(i).write(
+                            (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | b as u32,
+                        );
                     }
                     phbmp.write(hbmp);
                     pdwalpha.write(WTSAT_ARGB);
                 }
                 Ok(())
             }
-            Err(err) if err.kind() == io::ErrorKind::TimedOut => {
-                info!(target: "ThumbnailFileProvider", "Rendering thumbnails timeout file: {}, Elapsed: {:.2?}", filepath, start_time.elapsed());
-                unsafe {
-                    let mut p_bits: *mut core::ffi::c_void = core::ptr::null_mut();
-                    let hbmp = create_argb_bitmap(256, 256, &mut p_bits);
-                    std::ptr::copy(
-                        TIMEOUT_256X256_ARGB.as_ptr(),
-                        p_bits as *mut _,
-                        TIMEOUT_256X256_ARGB.len(),
-                    );
-                    phbmp.write(hbmp);
-                    pdwalpha.write(WTSAT_ARGB);
-                }
+            Ok(RenderResult::Pixels(_)) => {
+                warn!(target: "ThumbnailFileProvider", "Rendering thumbnails error file: {} (unexpected pixel count), Elapsed: {:.2?}", filepath, start_time.elapsed());
+                unsafe { write_image(ERROR_256X256_ARGB, phbmp, pdwalpha) };
                 Ok(())
             }
-            Err(_) | Ok(None) => {
-                info!(target: "ThumbnailFileProvider", "Rendering thumbnails error file: {}, Elapsed: {:.2?}", filepath, start_time.elapsed());
-                unsafe {
-                    let mut p_bits: *mut core::ffi::c_void = core::ptr::null_mut();
-                    let hbmp = create_argb_bitmap(256, 256, &mut p_bits);
-                    std::ptr::copy(
-                        ERROR_256X256_ARGB.as_ptr(),
-                        p_bits as *mut _,
-                        ERROR_256X256_ARGB.len(),
-                    );
-                    phbmp.write(hbmp);
-                    pdwalpha.write(WTSAT_ARGB);
-                }
+            // Valid file, nothing to draw (e.g. an Alembic locator-only scene):
+            // show the neutral "no preview" image, not the broken-file one.
+            Ok(RenderResult::Empty) => {
+                info!(target: "ThumbnailFileProvider", "No renderable geometry in file: {}, Elapsed: {:.2?}", filepath, start_time.elapsed());
+                unsafe { write_image(TIMEOUT_256X256_ARGB, phbmp, pdwalpha) };
+                Ok(())
+            }
+            Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                warn!(target: "ThumbnailFileProvider", "Rendering thumbnails timeout file: {}, Elapsed: {:.2?}", filepath, start_time.elapsed());
+                unsafe { write_image(TIMEOUT_256X256_ARGB, phbmp, pdwalpha) };
+                Ok(())
+            }
+            Err(err) => {
+                warn!(target: "ThumbnailFileProvider", "Rendering thumbnails error file: {}, error: {}, Elapsed: {:.2?}", filepath, err, start_time.elapsed());
+                unsafe { write_image(ERROR_256X256_ARGB, phbmp, pdwalpha) };
                 Ok(())
             }
         }

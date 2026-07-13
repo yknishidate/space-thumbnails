@@ -6,6 +6,7 @@ use log::info;
 const PERF_TARGET: &'static str = "SpaceThumbnailsPerf";
 
 use filament_bindings::{
+    alembic::{AlembicAsset, AlembicAssetError},
     assimp::{post_process, AssimpAsset},
     backend::{Backend, PixelBufferDescriptor, PixelDataFormat, PixelDataType},
     filament::{
@@ -30,6 +31,31 @@ const ASSIMP_FLAGS: u32 = post_process::GEN_SMOOTH_NORMALS
     | post_process::IMPROVE_CACHE_LOCALITY
     | post_process::SORT_BY_P_TYPE
     | post_process::TRIANGULATE;
+
+/// Why a model file could not be turned into a renderable scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadError {
+    /// The file parsed successfully but contains no renderable geometry (e.g.
+    /// an Alembic archive of only locators/transforms). Nothing is wrong with
+    /// the file — there is simply nothing to draw, so callers should show a
+    /// neutral "no preview" thumbnail rather than a broken-file one.
+    NoGeometry,
+    /// The model exceeds the complexity limits the bundled Filament can safely
+    /// handle and was deliberately skipped. Like `NoGeometry`, this is not a
+    /// broken file, so callers should show the neutral "no preview" thumbnail.
+    TooComplex,
+    /// The file could not be read or parsed (missing, corrupt, unsupported).
+    Failed,
+}
+
+/// Maps an Alembic import error to the coarse load outcome the renderer
+/// exposes: an empty archive is `NoGeometry`, everything else a failure.
+fn alembic_load_error(error: &AlembicAssetError) -> LoadError {
+    match error {
+        AlembicAssetError::EmptyModel => LoadError::NoGeometry,
+        _ => LoadError::Failed,
+    }
+}
 
 pub struct SpaceThumbnailsRenderer {
     // need release
@@ -156,33 +182,39 @@ impl SpaceThumbnailsRenderer {
         }
     }
 
-    pub fn load_asset_from_file(&mut self, filepath: impl AsRef<Path>) -> Option<&mut Self> {
-        if matches!(filepath.as_ref().extension(), Some(e) if e == "gltf" || e == "glb") {
+    pub fn load_asset_from_file(
+        &mut self,
+        filepath: impl AsRef<Path>,
+    ) -> Result<&mut Self, LoadError> {
+        let path = filepath.as_ref();
+        if matches!(path.extension(), Some(e) if e == "gltf" || e == "glb") {
             let start = Instant::now();
-            let data = fs::read(&filepath).ok()?;
+            let data = fs::read(path).map_err(|_| LoadError::Failed)?;
             info!(
                 target: PERF_TARGET,
                 "read file ({} bytes): {:.2?}",
                 data.len(),
                 start.elapsed()
             );
-            self.load_gltf_asset(
-                &data,
-                filepath.as_ref().file_name()?,
-                Some(filepath.as_ref()),
-            )
+            let name = path.file_name().ok_or(LoadError::Failed)?;
+            self.load_gltf_asset(&data, name, Some(path))
+        } else if matches!(path.extension(), Some(e) if e == "abc") {
+            let start = Instant::now();
+            let asset = AlembicAsset::from_file(&mut self.engine, path).map_err(|error| {
+                log::warn!(target: PERF_TARGET, "alembic import failed: {error}");
+                alembic_load_error(&error)
+            })?;
+            info!(target: PERF_TARGET, "alembic import from file: {:.2?}", start.elapsed());
+            self.load_alembic_asset(asset).ok_or(LoadError::Failed)
         } else {
             let start = Instant::now();
-            let asset =
-                match AssimpAsset::from_file_with_flags(&mut self.engine, filepath, ASSIMP_FLAGS) {
-                    Ok(asset) => asset,
-                    Err(error) => {
-                        log::warn!(target: PERF_TARGET, "assimp import failed: {error}");
-                        return None;
-                    }
-                };
+            let asset = AssimpAsset::from_file_with_flags(&mut self.engine, path, ASSIMP_FLAGS)
+                .map_err(|error| {
+                    log::warn!(target: PERF_TARGET, "assimp import failed: {error}");
+                    LoadError::Failed
+                })?;
             info!(target: PERF_TARGET, "assimp import from file: {:.2?}", start.elapsed());
-            self.load_assimp_asset(asset)
+            self.load_assimp_asset(asset).ok_or(LoadError::Failed)
         }
     }
 
@@ -190,29 +222,36 @@ impl SpaceThumbnailsRenderer {
         &mut self,
         buffer: &[u8],
         filename: impl AsRef<OsStr>,
-    ) -> Option<&mut Self> {
-        if matches!(Path::new(filename.as_ref()).extension(), Some(e) if e == "gltf" || e == "glb")
-        {
+    ) -> Result<&mut Self, LoadError> {
+        let name = Path::new(filename.as_ref());
+        if matches!(name.extension(), Some(e) if e == "gltf" || e == "glb") {
             self.load_gltf_asset(buffer, filename.as_ref(), None)
+        } else if matches!(name.extension(), Some(e) if e == "abc") {
+            let start = Instant::now();
+            let asset = AlembicAsset::from_memory(&mut self.engine, buffer).map_err(|error| {
+                log::warn!(target: PERF_TARGET, "alembic memory import failed: {error}");
+                alembic_load_error(&error)
+            })?;
+            info!(target: PERF_TARGET, "alembic import from memory: {:.2?}", start.elapsed());
+            self.load_alembic_asset(asset).ok_or(LoadError::Failed)
         } else {
             let start = Instant::now();
-            let format_hint = Path::new(filename.as_ref())
+            let format_hint = name
                 .extension()
-                .and_then(OsStr::to_str)?;
-            let asset = match AssimpAsset::from_memory_with_flags(
+                .and_then(OsStr::to_str)
+                .ok_or(LoadError::Failed)?;
+            let asset = AssimpAsset::from_memory_with_flags(
                 &mut self.engine,
                 buffer,
                 format_hint,
                 ASSIMP_FLAGS,
-            ) {
-                Ok(asset) => asset,
-                Err(error) => {
-                    log::warn!(target: PERF_TARGET, "assimp memory import failed ({format_hint}): {error}");
-                    return None;
-                }
-            };
+            )
+            .map_err(|error| {
+                log::warn!(target: PERF_TARGET, "assimp memory import failed ({format_hint}): {error}");
+                LoadError::Failed
+            })?;
             info!(target: PERF_TARGET, "assimp import from memory: {:.2?}", start.elapsed());
-            self.load_assimp_asset(asset)
+            self.load_assimp_asset(asset).ok_or(LoadError::Failed)
         }
     }
 
@@ -264,12 +303,56 @@ impl SpaceThumbnailsRenderer {
         Some(self)
     }
 
+    pub fn load_alembic_asset(&mut self, mut asset: AlembicAsset) -> Option<&mut Self> {
+        let start = Instant::now();
+        self.destroy_opened_asset();
+
+        unsafe {
+            let aabb = asset.get_aabb();
+            info!(
+                target: PERF_TARGET,
+                "alembic bounds: min={:?}, max={:?}",
+                aabb.min.vec,
+                aabb.max.vec
+            );
+            let transform = fit_into_unit_cube(aabb);
+
+            let mut transform_manager = self.engine.get_transform_manager()?;
+            let root_entity = asset.get_root_entity();
+            let root_transform_instance = transform_manager.get_instance(root_entity)?;
+            transform_manager.set_transform_float(&root_transform_instance, &transform);
+
+            self.scene.add_entities(asset.get_renderables());
+            self.scene.add_entity(root_entity);
+
+            let mut camera = self
+                .engine
+                .get_camera_component(&self.camera_entity)
+                .unwrap();
+
+            camera.set_exposure_physical(16.0, 1.0 / 125.0, 100.0);
+
+            setup_camera_surround_view(&mut camera, &aabb.transform(transform), &self.viewport);
+
+            self.destroy_asset = Some(Box::new(move |engine, scene| {
+                scene.remove_entities(asset.get_renderables());
+                scene.remove_entity(asset.get_root_entity());
+                // note: "destory" is the (misspelled) method name in filament-bindings
+                asset.destory(engine)
+            }));
+        }
+
+        info!(target: PERF_TARGET, "scene setup (alembic): {:.2?}", start.elapsed());
+
+        Some(self)
+    }
+
     pub fn load_gltf_asset(
         &mut self,
         data: &[u8],
         filename: &OsStr,
         filepath: Option<&Path>,
-    ) -> Option<&mut Self> {
+    ) -> Result<&mut Self, LoadError> {
         let start = Instant::now();
         self.destroy_opened_asset();
 
@@ -301,7 +384,7 @@ impl SpaceThumbnailsRenderer {
                     nodes,
                     primitives
                 );
-                return None;
+                return Err(LoadError::TooComplex);
             }
             SanitizedGltf::Unchanged => data,
         };
@@ -321,23 +404,27 @@ impl SpaceThumbnailsRenderer {
             // sheen, which the archive already covers) keep the much faster
             // ubershader path.
             let materials = if requires_jit_materials {
-                MaterialProvider::create_material_generator(&mut self.engine, false)?
+                MaterialProvider::create_material_generator(&mut self.engine, false)
+                    .ok_or(LoadError::Failed)?
             } else {
-                MaterialProvider::create_ubershader_loader(&mut self.engine)?
+                MaterialProvider::create_ubershader_loader(&mut self.engine)
+                    .ok_or(LoadError::Failed)?
             };
-            let mut entity_manager = self.engine.get_entity_manager()?;
-            let mut transform_manager = self.engine.get_transform_manager()?;
+            let mut entity_manager = self.engine.get_entity_manager().ok_or(LoadError::Failed)?;
+            let mut transform_manager =
+                self.engine.get_transform_manager().ok_or(LoadError::Failed)?;
             let mut loader = AssetLoader::create(AssetConfiguration {
                 engine: &mut self.engine,
                 materials,
                 entities: Some(&mut entity_manager),
                 default_node_name: None,
-            })?;
+            })
+            .ok_or(LoadError::Failed)?;
 
             let mut asset = if load_as_binary {
-                loader.create_asset_from_binary(&data)?
+                loader.create_asset_from_binary(&data).ok_or(LoadError::Failed)?
             } else {
-                loader.create_asset_from_json(&data)?
+                loader.create_asset_from_json(&data).ok_or(LoadError::Failed)?
             };
             info!(target: PERF_TARGET, "gltf parse asset: {:.2?}", start.elapsed());
 
@@ -348,7 +435,7 @@ impl SpaceThumbnailsRenderer {
             info!(target: PERF_TARGET, "gltf checked resource uris (external: {})", has_external_resource);
 
             if filepath_str.is_none() && has_external_resource {
-                return None;
+                return Err(LoadError::Failed);
             }
 
             let resources_start = Instant::now();
@@ -373,7 +460,9 @@ impl SpaceThumbnailsRenderer {
 
             let aabb = asset.get_bounding_box();
             let transform = fit_into_unit_cube(&aabb);
-            let root_transform_instance = transform_manager.get_instance(&asset.get_root())?;
+            let root_transform_instance = transform_manager
+                .get_instance(&asset.get_root())
+                .ok_or(LoadError::Failed)?;
 
             transform_manager.set_transform_float(&root_transform_instance, &transform);
 
@@ -398,7 +487,7 @@ impl SpaceThumbnailsRenderer {
 
         info!(target: PERF_TARGET, "gltf load total: {:.2?}", start.elapsed());
 
-        Some(self)
+        Ok(self)
     }
 
     pub fn take_screenshot_sync(&mut self, output_memory: &mut [u8]) -> usize {

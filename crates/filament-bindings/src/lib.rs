@@ -11,6 +11,8 @@ mod bindgen {
     include!(concat!(env!("OUT_DIR"), "/bindings/bindings.rs"));
 }
 
+#[cfg(feature = "alembic")]
+pub mod alembic;
 #[cfg(feature = "assimp")]
 pub mod assimp;
 pub mod backend;

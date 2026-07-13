@@ -2,8 +2,6 @@
 
 Generates preview thumbnails for 3D model files. Provide a Windows Explorer extensions that adds preview thumbnails for 3D model files.
 
-[![](https://img.shields.io/github/downloads/eyhn/space-thumbnails/total)](https://github.com/EYHN/space-thumbnails/releases)
-
 ![screenshot](./screenshot.png)
 
 ## Supported formats
@@ -19,9 +17,9 @@ Generates preview thumbnails for 3D model files. Provide a Windows Explorer exte
 
 ## Windows Explorer Extensions
 
-#### **[Download From Github Release](https://github.com/EYHN/space-thumbnails/releases)**
+#### **[Download From Github Release](https://github.com/yknishidate/space-thumbnails/releases)**
 
-[![](https://img.shields.io/github/v/release/eyhn/space-thumbnails?display_name=tag&sort=semver)](https://github.com/EYHN/space-thumbnails/releases)
+[![](https://img.shields.io/github/v/release/yknishidate/space-thumbnails?display_name=tag&sort=semver)](https://github.com/yknishidate/space-thumbnails/releases)
 
 ### No thumbnails showing
 

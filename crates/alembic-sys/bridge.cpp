@@ -86,7 +86,12 @@ void walk(const IObject& object, const M44d& parentXform, MeshAccum& accum) {
             AbcG::IXform xf(child, kWrapExisting);
             AbcG::XformSample xs;
             xf.getSchema().get(xs, ISampleSelector((index_t)0));
-            xform = xs.getMatrix() * parentXform;
+            // Respect the "inherit transform" flag (.inherits): when false,
+            // this xform's matrix is world-relative and the parent's
+            // accumulated transform must be ignored, not composed. Blindly
+            // multiplying by the parent misplaces such nodes (Blender T52022).
+            xform = xs.getInheritsXforms() ? xs.getMatrix() * parentXform
+                                           : xs.getMatrix();
             walk(child, xform, accum);
         } else if (AbcG::IPolyMesh::matches(child.getMetaData())) {
             AbcG::IPolyMesh mesh(child, kWrapExisting);

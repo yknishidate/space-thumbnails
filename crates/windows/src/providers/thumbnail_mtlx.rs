@@ -12,7 +12,7 @@ use std::{
 };
 
 use lazy_static::lazy_static;
-use log::{info, warn};
+use log::{debug, warn};
 use windows::{
     core::{implement, IUnknown, Interface, GUID},
     Win32::{
@@ -31,6 +31,7 @@ use windows::{
 
 use crate::{
     constant::{ERROR_256X256_ARGB, TIMEOUT_256X256_ARGB},
+    logging::{error_label, input_label},
     registry::{register_clsid, RegistryData, RegistryKey, RegistryValue},
     utils::create_argb_bitmap,
 };
@@ -281,11 +282,11 @@ impl IThumbnailProvider_Impl for MtlxThumbnailHandler {
         }
 
         let start_time = Instant::now();
-        info!(target: "MtlxThumbnailProvider", "Getting thumbnail from file: {}", filepath);
+        let input = input_label(&filepath);
 
         match render_via_helper(&filepath) {
             Ok(pixels) => {
-                info!(target: "MtlxThumbnailProvider", "Rendering thumbnail success file: {}, Elapsed: {:.2?}", filepath, start_time.elapsed());
+                debug!(target: "MtlxThumbnailProvider", "thumbnail completed: input={}, outcome=success, elapsed={:.2?}", input, start_time.elapsed());
                 let size = THUMBNAIL_SIZE;
                 unsafe {
                     let mut p_bits: *mut core::ffi::c_void = core::ptr::null_mut();
@@ -305,12 +306,25 @@ impl IThumbnailProvider_Impl for MtlxThumbnailHandler {
                 Ok(())
             }
             Err(err) if err.kind() == io::ErrorKind::TimedOut => {
-                warn!(target: "MtlxThumbnailProvider", "Rendering thumbnail timeout file: {}, Elapsed: {:.2?}", filepath, start_time.elapsed());
+                warn!(target: "MtlxThumbnailProvider", "thumbnail timed out: input={}, elapsed={:.2?}", input, start_time.elapsed());
                 unsafe { write_static_image(TIMEOUT_256X256_ARGB, phbmp, pdwalpha) };
                 Ok(())
             }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::InvalidData
+                ) =>
+            {
+                warn!(target: "MtlxThumbnailProvider", "thumbnail infrastructure failure: input={}, error={:?}, elapsed={:.2?}", input, err.kind(), start_time.elapsed());
+                unsafe { write_static_image(ERROR_256X256_ARGB, phbmp, pdwalpha) };
+                Ok(())
+            }
             Err(err) => {
-                warn!(target: "MtlxThumbnailProvider", "Rendering thumbnail error file: {}, error: {}, Elapsed: {:.2?}", filepath, err, start_time.elapsed());
+                debug!(target: "MtlxThumbnailProvider", "thumbnail failed: input={}, error={}, elapsed={:.2?}", input, error_label(&err), start_time.elapsed());
                 unsafe { write_static_image(ERROR_256X256_ARGB, phbmp, pdwalpha) };
                 Ok(())
             }

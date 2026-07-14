@@ -54,7 +54,37 @@ If there is an error loading the file (corrupt or illegal file), it will display
 
 ### Logs
 
-Space Thumbnails saving the logs in `Windows Events`. To view the logs, you can open `Event Viewer`, right-click on the `Custom Views` folder in the left Console Tree, click `Create Custom View...`. and follow the steps below to create a custom view. You need to upload the logs here when you submit the issue.
+Space Thumbnails records important warnings and errors in the Windows
+Application Event Log. Routine thumbnail successes and input-file errors are
+not written there.
+
+To inspect the events, open **Event Viewer**, select **Windows Logs >
+Application**, choose **Filter Current Log...**, and select the event source
+**Space Thumbnails**. The most recent events can also be viewed from
+PowerShell:
+
+```powershell
+Get-WinEvent -FilterHashtable @{
+  LogName = 'Application'
+  ProviderName = 'Space Thumbnails'
+} -MaxEvents 50
+```
+
+#### Detailed diagnostic logs
+
+Detailed per-thumbnail logs are disabled in release builds by default. To
+temporarily enable them, set `SPACE_THUMBNAILS_LOG` to `error`, `warn`,
+`info`, `debug`, or `trace`, then start a new Explorer/shell host process so
+it inherits the setting. Development builds default to `debug` logging.
+
+Diagnostic logs are written per process under
+`%LOCALAPPDATA%\SpaceThumbnails\Logs`. Each file is limited to 5 MB with one
+backup generation, and files older than seven days are removed when logging
+starts.
+
+For privacy, logs include the file name but omit its directory by default. Set
+`SPACE_THUMBNAILS_LOG_PATHS=1` only when full paths are needed for a local
+diagnostic session. Review diagnostic logs before sharing them.
 
 ![](event-viewer.png)
 

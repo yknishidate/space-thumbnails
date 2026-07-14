@@ -8,8 +8,6 @@
 
 #![allow(unused_must_use)] // emitted by windows::core::implement generated release glue
 
-mod logging;
-
 use windows::{
     core::{implement, IUnknown, Interface, GUID, HRESULT},
     Win32::{
@@ -75,6 +73,8 @@ pub unsafe extern "system" fn DllGetClassObject(
     riid: *const GUID,
     pout: *mut windows::core::RawPtr,
 ) -> HRESULT {
+    space_thumbnails_windows::logging::init("provider-mtlx");
+
     if *riid != windows::Win32::System::Com::IClassFactory::IID {
         return E_UNEXPECTED;
     }
@@ -97,8 +97,6 @@ pub extern "stdcall" fn DllMain(
     _reserved: *mut core::ffi::c_void,
 ) -> bool {
     if reason == DLL_PROCESS_ATTACH {
-        crate::logging::init();
-
         unsafe {
             DLL_INSTANCE = dll_instance;
             DisableThreadLibraryCalls(dll_instance);

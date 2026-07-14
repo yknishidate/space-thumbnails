@@ -7,7 +7,7 @@ use std::{
 };
 
 use lazy_static::lazy_static;
-use log::{info, warn};
+use log::{debug, warn};
 use windows::{
     core::{implement, IUnknown, Interface, GUID},
     Win32::{
@@ -23,6 +23,7 @@ use windows::{
 use crate::{
     constant::{ERROR_256X256_ARGB, TIMEOUT_256X256_ARGB, TOOLARGE_256X256_ARGB},
     helper_client::{find_helper, HelperClient, RenderResult},
+    logging::{error_label, input_label},
     registry::{register_clsid, RegistryData, RegistryKey, RegistryValue},
     utils::create_argb_bitmap,
 };
@@ -145,7 +146,7 @@ impl IThumbnailProvider_Impl for ThumbnailFileHandler {
         }
 
         let start_time = Instant::now();
-        info!(target: "ThumbnailFileProvider", "Getting thumbnail from file: {}", filepath);
+        let input = input_label(&filepath);
 
         let helper = match RENDER_HELPER.as_ref() {
             Some(helper) => helper,
@@ -158,7 +159,7 @@ impl IThumbnailProvider_Impl for ThumbnailFileHandler {
 
         match helper.render(&filepath, size) {
             Ok(RenderResult::Pixels(pixels)) if pixels.len() == (size * size * 4) as usize => {
-                info!(target: "ThumbnailFileProvider", "Rendering thumbnails success file: {}, Elapsed: {:.2?}", filepath, start_time.elapsed());
+                debug!(target: "ThumbnailFileProvider", "thumbnail completed: input={}, outcome=success, elapsed={:.2?}", input, start_time.elapsed());
                 unsafe {
                     let mut p_bits: *mut core::ffi::c_void = core::ptr::null_mut();
                     let hbmp = create_argb_bitmap(size, size, &mut p_bits);
@@ -177,24 +178,37 @@ impl IThumbnailProvider_Impl for ThumbnailFileHandler {
                 Ok(())
             }
             Ok(RenderResult::Pixels(_)) => {
-                warn!(target: "ThumbnailFileProvider", "Rendering thumbnails error file: {} (unexpected pixel count), Elapsed: {:.2?}", filepath, start_time.elapsed());
+                warn!(target: "ThumbnailFileProvider", "thumbnail failed: input={}, error=unexpected_pixel_count, elapsed={:.2?}", input, start_time.elapsed());
                 unsafe { write_image(ERROR_256X256_ARGB, phbmp, pdwalpha) };
                 Ok(())
             }
             // Valid file, nothing to draw (e.g. an Alembic locator-only scene):
             // show the neutral "no preview" image, not the broken-file one.
             Ok(RenderResult::Empty) => {
-                info!(target: "ThumbnailFileProvider", "No renderable geometry in file: {}, Elapsed: {:.2?}", filepath, start_time.elapsed());
+                debug!(target: "ThumbnailFileProvider", "thumbnail completed: input={}, outcome=no_geometry, elapsed={:.2?}", input, start_time.elapsed());
                 unsafe { write_image(TIMEOUT_256X256_ARGB, phbmp, pdwalpha) };
                 Ok(())
             }
             Err(err) if err.kind() == io::ErrorKind::TimedOut => {
-                warn!(target: "ThumbnailFileProvider", "Rendering thumbnails timeout file: {}, Elapsed: {:.2?}", filepath, start_time.elapsed());
+                warn!(target: "ThumbnailFileProvider", "thumbnail timed out: input={}, elapsed={:.2?}", input, start_time.elapsed());
                 unsafe { write_image(TIMEOUT_256X256_ARGB, phbmp, pdwalpha) };
                 Ok(())
             }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::InvalidData
+                ) =>
+            {
+                warn!(target: "ThumbnailFileProvider", "thumbnail infrastructure failure: input={}, error={:?}, elapsed={:.2?}", input, err.kind(), start_time.elapsed());
+                unsafe { write_image(ERROR_256X256_ARGB, phbmp, pdwalpha) };
+                Ok(())
+            }
             Err(err) => {
-                warn!(target: "ThumbnailFileProvider", "Rendering thumbnails error file: {}, error: {}, Elapsed: {:.2?}", filepath, err, start_time.elapsed());
+                debug!(target: "ThumbnailFileProvider", "thumbnail failed: input={}, error={}, elapsed={:.2?}", input, error_label(&err), start_time.elapsed());
                 unsafe { write_image(ERROR_256X256_ARGB, phbmp, pdwalpha) };
                 Ok(())
             }

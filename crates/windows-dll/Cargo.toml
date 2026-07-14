@@ -9,7 +9,6 @@ space-thumbnails-windows = { path = "../windows" }
 winreg = "0.10"
 eventlog = "0.1.1"
 log = "0.4"
-humantime = "2"
 
 
 [lib]

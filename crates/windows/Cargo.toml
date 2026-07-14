@@ -9,6 +9,8 @@ crate-type = ["lib"]
 [dependencies]
 lazy_static = "1.4"
 log = "0.4"
+eventlog = "0.1.1"
+humantime = "2"
 
 [dependencies.windows]
 version = "0.34.0"

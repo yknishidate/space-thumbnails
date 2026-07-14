@@ -65,6 +65,9 @@ pub unsafe extern "system" fn DllGetClassObject(
     riid: *const GUID,
     pout: *mut windows::core::RawPtr,
 ) -> HRESULT {
+    space_thumbnails_windows::logging::init("provider-main");
+    crate::crash::install();
+
     if *riid != windows::Win32::System::Com::IClassFactory::IID {
         return E_UNEXPECTED;
     }
@@ -89,9 +92,6 @@ pub extern "stdcall" fn DllMain(
     _reserved: *mut core::ffi::c_void,
 ) -> bool {
     if reason == DLL_PROCESS_ATTACH {
-        crate::logging::init("Space Thumbnails", log::Level::Trace);
-        crate::crash::install();
-
         unsafe {
             DLL_INSTANCE = dll_instance;
             DisableThreadLibraryCalls(dll_instance);

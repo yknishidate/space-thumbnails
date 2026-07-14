@@ -5,4 +5,4 @@ members = ["crates/*"]
 # Single source of truth for the product version (also becomes the MSI
 # version). filament-bindings keeps its own upstream version.
 [workspace.package]
-version = "1.1.2"
+version = "1.1.3"

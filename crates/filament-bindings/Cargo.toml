@@ -39,7 +39,7 @@ num_enum = "0.5"
 half = "1.8"
 russimp-sys-static = { path = "../russimp-sys-static", default-features = false, optional = true }
 # decodes material textures for the assimp path (external files and embedded)
-image = { version = "0.24", default-features = false, features = ["png", "jpeg", "bmp", "tga", "tiff", "dds", "webp"], optional = true }
+image = { version = "0.24", default-features = false, features = ["png", "jpeg", "bmp", "tga", "tiff", "dds", "webp", "openexr", "hdr"], optional = true }
 alembic-sys = { path = "../alembic-sys", optional = true }
 
 [dev-dependencies]

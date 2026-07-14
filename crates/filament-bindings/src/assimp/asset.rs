@@ -1252,8 +1252,12 @@ unsafe fn read_texture_rgba(
 }
 
 /// Resolves an external texture reference against the model's directory:
-/// absolute paths as-is, then relative to the model, then by bare file name
-/// next to the model (textures are often moved alongside it).
+/// absolute paths as-is, then relative to the model, then progressively
+/// longer suffixes of the reference joined onto the model's directory
+/// (Blender-style: an exporting-machine path like
+/// `/mnt/assets/torch/textures/diff.jpg` resolves to
+/// `<model dir>/textures/diff.jpg`), and finally the bare file name one
+/// level down in the model's subdirectories.
 fn resolve_texture_file(path_str: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
     let normalized = path_str.replace('\\', "/");
     let path = Path::new(&normalized);
@@ -1267,8 +1271,33 @@ fn resolve_texture_file(path_str: &str, base_dir: Option<&Path>) -> Option<PathB
         return Some(candidate);
     }
 
-    let candidate = base_dir.join(path.file_name()?);
-    candidate.is_file().then(|| candidate)
+    // Suffix search over real name components only (root, drive, `.` and
+    // `..` dropped), so every candidate stays inside base_dir.
+    let components: Vec<&str> = normalized
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != "." && *c != ".." && !c.ends_with(':'))
+        .collect();
+    for start in (0..components.len()).rev() {
+        let mut candidate = base_dir.to_path_buf();
+        for component in &components[start..] {
+            candidate.push(component);
+        }
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    // Last resort for references carrying no usable directory information:
+    // the bare file name in each immediate subdirectory (bounded, no
+    // recursion — this runs inside the thumbnail pipeline).
+    let file_name = components.last()?;
+    for entry in std::fs::read_dir(base_dir).ok()?.take(256).flatten() {
+        let candidate = entry.path().join(file_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone)]

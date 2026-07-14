@@ -96,11 +96,48 @@ struct AssimpMeshPart {
     opacity: f32,
     metallic: f32,
     roughness: f32,
+    // true when the material carried explicit PBR factors; a texture then
+    // multiplies the factor instead of replacing it
+    explicit_metallic: bool,
+    explicit_roughness: bool,
     reflectance: f32,
     base_color: filament::sRGBColor,
-    // base color / diffuse texture reference as stored in the material
-    // (either an external file path or an embedded-texture name like "*0")
-    texture_path: Option<String>,
+    emissive_color: Float3,
+    textures: PartTexturePaths,
+}
+
+// texture references as stored in the material (either external file paths
+// or embedded-texture names like "*0"), one per supported material slot
+#[derive(Default)]
+struct PartTexturePaths {
+    base_color: Option<String>,
+    metallic: Option<String>,
+    roughness: Option<String>,
+    normal: Option<String>,
+    emissive: Option<String>,
+    ao: Option<String>,
+}
+
+// indices into `AssimpAsset::textures` after loading, same slots
+#[derive(Default, Clone, Copy)]
+struct PartTextureIndices {
+    base_color: Option<usize>,
+    metallic: Option<usize>,
+    roughness: Option<usize>,
+    normal: Option<usize>,
+    emissive: Option<usize>,
+    ao: Option<usize>,
+}
+
+impl PartTextureIndices {
+    fn any(&self) -> bool {
+        self.base_color.is_some()
+            || self.metallic.is_some()
+            || self.roughness.is_some()
+            || self.normal.is_some()
+            || self.emissive.is_some()
+            || self.ao.is_some()
+    }
 }
 
 pub mod post_process {
@@ -412,11 +449,14 @@ impl AssimpAsset {
 
             let mut material_instances: Vec<MaterialInstance> = Vec::with_capacity(meshes.len());
 
-            // Base color textures, deduplicated by their material path. The
-            // textured material variant is only built when a texture loads.
+            // Material textures, deduplicated by (path, srgb). The textured
+            // material variant and its dummy fallback textures are only
+            // built when at least one texture loads.
             let mut textures: Vec<Texture> = Vec::new();
-            let mut texture_cache: HashMap<String, Option<usize>> = HashMap::new();
+            let mut texture_cache: HashMap<(String, bool), Option<usize>> = HashMap::new();
             let mut textured_material: Option<Material> = None;
+            let mut dummy_white: Option<usize> = None;
+            let mut dummy_normal: Option<usize> = None;
             let texture_sampler = TextureSampler::new(
                 SamplerMagFilter::LINEAR,
                 SamplerMinFilter::LINEAR_MIPMAP_LINEAR,
@@ -451,22 +491,57 @@ impl AssimpAsset {
                         part.indices_count,
                     );
 
-                    // Resolve the part's base color texture (opaque parts
-                    // only; the transparent material has no sampler).
-                    let mut part_texture: Option<usize> = None;
+                    // Resolve the part's textures (opaque parts only; the
+                    // transparent material has no samplers). Base color and
+                    // emissive are color data (sRGB), the rest is linear.
+                    let mut part_textures = PartTextureIndices::default();
                     if part.opacity >= 1.0 {
-                        if let Some(path) = &part.texture_path {
-                            part_texture = *texture_cache
-                                .entry(path.clone())
+                        let mut resolve = |path: &Option<String>,
+                                           srgb: bool,
+                                           textures: &mut Vec<Texture>,
+                                           engine: &mut filament::Engine|
+                         -> Option<usize> {
+                            let path = path.as_ref()?;
+                            *texture_cache
+                                .entry((path.clone(), srgb))
                                 .or_insert_with(|| {
-                                    load_material_texture(engine, scene, path, base_dir).map(
-                                        |texture| {
+                                    load_material_texture(engine, scene, path, base_dir, srgb)
+                                        .map(|texture| {
                                             textures.push(texture);
                                             textures.len() - 1
-                                        },
-                                    )
-                                });
-                        }
+                                        })
+                                })
+                        };
+                        part_textures = PartTextureIndices {
+                            base_color: resolve(
+                                &part.textures.base_color,
+                                true,
+                                &mut textures,
+                                engine,
+                            ),
+                            metallic: resolve(&part.textures.metallic, false, &mut textures, engine),
+                            roughness: resolve(
+                                &part.textures.roughness,
+                                false,
+                                &mut textures,
+                                engine,
+                            ),
+                            normal: resolve(&part.textures.normal, false, &mut textures, engine),
+                            emissive: resolve(&part.textures.emissive, true, &mut textures, engine),
+                            ao: resolve(&part.textures.ao, false, &mut textures, engine),
+                        };
+                    }
+
+                    // A texture multiplies its factor; when the factor was
+                    // only heuristic (no explicit PBR property), let the
+                    // texture stand on its own.
+                    let mut metallic_value = part.metallic;
+                    let mut roughness_value = part.roughness;
+                    if part_textures.metallic.is_some() && !part.explicit_metallic {
+                        metallic_value = 1.0;
+                    }
+                    if part_textures.roughness.is_some() && !part.explicit_roughness {
+                        roughness_value = 1.0;
                     }
 
                     let mut color_material;
@@ -487,13 +562,23 @@ impl AssimpAsset {
                             )
                             .ok()
                             .ok_or(E::InvalidString)?;
-                    } else if let Some(texture_index) = part_texture {
+                    } else if part_textures.any() {
                         if textured_material.is_none() {
                             let mut material_builder =
                                 MaterialBuilder::new().ok_or(E::InternalError)?;
                             material_builder.package(RESOURCES_AITEXTUREDMAT_DATA);
                             textured_material =
                                 Some(material_builder.build(engine).ok_or(E::InternalError)?);
+                            // fallbacks for unused sampler slots: white keeps
+                            // multiplied factors intact, flat normal is a no-op
+                            let white = make_pixel_texture(engine, [255, 255, 255, 255])
+                                .ok_or(E::InternalError)?;
+                            textures.push(white);
+                            dummy_white = Some(textures.len() - 1);
+                            let flat_normal = make_pixel_texture(engine, [128, 128, 255, 255])
+                                .ok_or(E::InternalError)?;
+                            textures.push(flat_normal);
+                            dummy_normal = Some(textures.len() - 1);
                         }
                         color_material = textured_material
                             .as_ref()
@@ -503,7 +588,9 @@ impl AssimpAsset {
                         // The material color multiplies the texture; a black
                         // color would erase it (some exporters zero the
                         // diffuse color when a texture is present).
-                        let tint = if part.base_color.0.vec.iter().all(|c| *c < 0.05) {
+                        let tint = if part_textures.base_color.is_some()
+                            && part.base_color.0.vec.iter().all(|c| *c < 0.05)
+                        {
                             Float3::new(1.0, 1.0, 1.0)
                         } else {
                             part.base_color.0
@@ -512,14 +599,35 @@ impl AssimpAsset {
                             .set_rgb_parameter("baseColor", filament::RgbType::sRGB, tint)
                             .ok()
                             .ok_or(E::InvalidString)?;
+                        // Same washout guard for emissive: a texture with a
+                        // zeroed factor would never show.
+                        let emissive_factor = if part_textures.emissive.is_some()
+                            && part.emissive_color.vec.iter().all(|c| *c < 0.05)
+                        {
+                            Float3::new(1.0, 1.0, 1.0)
+                        } else {
+                            part.emissive_color
+                        };
                         color_material
-                            .set_texture_parameter(
-                                "baseColorMap",
-                                &textures[texture_index],
-                                &texture_sampler,
-                            )
+                            .set_float3_parameter("emissiveFactor", &emissive_factor)
                             .ok()
                             .ok_or(E::InvalidString)?;
+                        let white = dummy_white.unwrap();
+                        let flat_normal = dummy_normal.unwrap();
+                        for (name, index) in [
+                            ("baseColorMap", part_textures.base_color.unwrap_or(white)),
+                            ("metallicMap", part_textures.metallic.unwrap_or(white)),
+                            ("roughnessMap", part_textures.roughness.unwrap_or(white)),
+                            ("normalMap", part_textures.normal.unwrap_or(flat_normal)),
+                            // white dummy + zero factor keeps emissive off
+                            ("emissiveMap", part_textures.emissive.unwrap_or(white)),
+                            ("aoMap", part_textures.ao.unwrap_or(white)),
+                        ] {
+                            color_material
+                                .set_texture_parameter(name, &textures[index], &texture_sampler)
+                                .ok()
+                                .ok_or(E::InvalidString)?;
+                        }
                         color_material
                             .set_float_parameter("reflectance", &part.reflectance)
                             .ok()
@@ -542,11 +650,11 @@ impl AssimpAsset {
                             .ok_or(E::InvalidString)?;
                     }
                     color_material
-                        .set_float_parameter("metallic", &part.metallic)
+                        .set_float_parameter("metallic", &metallic_value)
                         .ok()
                         .ok_or(E::InvalidString)?;
                     color_material
-                        .set_float_parameter("roughness", &part.roughness)
+                        .set_float_parameter("roughness", &roughness_value)
                         .ok()
                         .ok_or(E::InvalidString)?;
                     builder.material(part_index, &mut color_material);
@@ -828,7 +936,7 @@ unsafe fn process_node(
             }
 
             // convert shininess to roughness
-            let roughness = (2.0 / (shininess + 2.0)).sqrt();
+            let mut roughness = (2.0 / (shininess + 2.0)).sqrt();
 
             let mut metallic = 0.0f32;
             let mut reflectance = 0.5f32;
@@ -857,34 +965,99 @@ unsafe fn process_node(
                 }
             }
 
-            let mut texture_path: Option<String> = None;
-            for texture_type in [
-                russimp_sys::aiTextureType_aiTextureType_BASE_COLOR,
-                russimp_sys::aiTextureType_aiTextureType_DIFFUSE,
-            ] {
-                let mut ai_path: russimp_sys::aiString = core::mem::zeroed();
-                if russimp_sys::aiGetMaterialTexture(
-                    &material,
-                    texture_type,
-                    0,
-                    &mut ai_path,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                ) == russimp_sys::aiReturn_aiReturn_SUCCESS
-                    && ai_path.length > 0
-                {
-                    let bytes: Vec<u8> = ai_path.data[..ai_path.length as usize]
-                        .iter()
-                        .map(|&c| c as u8)
-                        .collect();
-                    texture_path = Some(String::from_utf8_lossy(&bytes).into_owned());
-                    break;
-                }
+            // explicit PBR factors (glTF-style properties, also written by
+            // FBX PBR exporters) override the Phong-derived heuristics above
+            let material_metallic_factor_key = CString::new("$mat.metallicFactor").unwrap();
+            let material_roughness_factor_key = CString::new("$mat.roughnessFactor").unwrap();
+            let mut factor = 0.0f32;
+            let mut explicit_metallic = false;
+            if russimp_sys::aiGetMaterialFloatArray(
+                &material,
+                material_metallic_factor_key.as_ptr(),
+                0,
+                0,
+                &mut factor,
+                ptr::null_mut(),
+            ) == russimp_sys::aiReturn_aiReturn_SUCCESS
+            {
+                metallic = factor;
+                explicit_metallic = true;
             }
+            let mut explicit_roughness = false;
+            if russimp_sys::aiGetMaterialFloatArray(
+                &material,
+                material_roughness_factor_key.as_ptr(),
+                0,
+                0,
+                &mut factor,
+                ptr::null_mut(),
+            ) == russimp_sys::aiReturn_aiReturn_SUCCESS
+            {
+                roughness = factor;
+                explicit_roughness = true;
+            }
+
+            let material_emissive_key = CString::new("$clr.emissive").unwrap();
+            let mut emissive_color = Float3::new(0.0, 0.0, 0.0);
+            if russimp_sys::aiGetMaterialColor(
+                &material,
+                material_emissive_key.as_ptr(),
+                0,
+                0,
+                &mut color,
+            ) == russimp_sys::aiReturn_aiReturn_SUCCESS
+            {
+                emissive_color = Float3::new(color.r, color.g, color.b);
+            }
+
+            // UNKNOWN is where glTF-style combined metallicRoughness textures
+            // land; HEIGHT is where OBJ's map_Bump lands (in practice these
+            // almost always contain normal maps, not height fields)
+            let textures = PartTexturePaths {
+                base_color: find_material_texture(
+                    &material,
+                    &[
+                        russimp_sys::aiTextureType_aiTextureType_BASE_COLOR,
+                        russimp_sys::aiTextureType_aiTextureType_DIFFUSE,
+                    ],
+                ),
+                metallic: find_material_texture(
+                    &material,
+                    &[
+                        russimp_sys::aiTextureType_aiTextureType_METALNESS,
+                        russimp_sys::aiTextureType_aiTextureType_UNKNOWN,
+                    ],
+                ),
+                roughness: find_material_texture(
+                    &material,
+                    &[
+                        russimp_sys::aiTextureType_aiTextureType_DIFFUSE_ROUGHNESS,
+                        russimp_sys::aiTextureType_aiTextureType_UNKNOWN,
+                    ],
+                ),
+                normal: find_material_texture(
+                    &material,
+                    &[
+                        russimp_sys::aiTextureType_aiTextureType_NORMALS,
+                        russimp_sys::aiTextureType_aiTextureType_NORMAL_CAMERA,
+                        russimp_sys::aiTextureType_aiTextureType_HEIGHT,
+                    ],
+                ),
+                emissive: find_material_texture(
+                    &material,
+                    &[
+                        russimp_sys::aiTextureType_aiTextureType_EMISSION_COLOR,
+                        russimp_sys::aiTextureType_aiTextureType_EMISSIVE,
+                    ],
+                ),
+                ao: find_material_texture(
+                    &material,
+                    &[
+                        russimp_sys::aiTextureType_aiTextureType_AMBIENT_OCCLUSION,
+                        russimp_sys::aiTextureType_aiTextureType_LIGHTMAP,
+                    ],
+                ),
+            };
 
             current_mesh.parts.push(AssimpMeshPart {
                 indices_offset: index_buffer_offset,
@@ -893,8 +1066,11 @@ unsafe fn process_node(
                 opacity,
                 roughness,
                 metallic,
+                explicit_metallic,
+                explicit_roughness,
                 reflectance,
-                texture_path,
+                emissive_color,
+                textures,
             });
         }
     }
@@ -936,14 +1112,71 @@ unsafe fn process_node(
     }
 }
 
-/// Loads a material's base color texture into a filament texture with
-/// mipmaps. Returns `None` (part falls back to its flat color) when the
-/// reference can't be resolved or the image can't be decoded.
+/// Returns the first texture reference found among the given assimp
+/// texture types, in priority order.
+unsafe fn find_material_texture(
+    material: &russimp_sys::aiMaterial,
+    types: &[russimp_sys::aiTextureType],
+) -> Option<String> {
+    for &texture_type in types {
+        let mut ai_path: russimp_sys::aiString = core::mem::zeroed();
+        if russimp_sys::aiGetMaterialTexture(
+            material,
+            texture_type,
+            0,
+            &mut ai_path,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        ) == russimp_sys::aiReturn_aiReturn_SUCCESS
+            && ai_path.length > 0
+        {
+            let bytes: Vec<u8> = ai_path.data[..ai_path.length as usize]
+                .iter()
+                .map(|&c| c as u8)
+                .collect();
+            return Some(String::from_utf8_lossy(&bytes).into_owned());
+        }
+    }
+    None
+}
+
+/// Builds a 1x1 texture from a single RGBA texel, used as fallback for
+/// sampler slots the material doesn't provide a texture for.
+unsafe fn make_pixel_texture(engine: &mut Engine, rgba: [u8; 4]) -> Option<Texture> {
+    let mut texture_builder = TextureBuilder::new()?;
+    texture_builder
+        .width(1)
+        .height(1)
+        .levels(1)
+        .sampler(SamplerType::SAMPLER_2D)
+        .format(TextureFormat::RGBA8)
+        .usage(TextureUsage::DEFAULT);
+    let mut texture = texture_builder.build(engine)?;
+    texture.set_image(
+        engine,
+        0,
+        1,
+        1,
+        PixelBufferDescriptor::new(rgba.to_vec(), PixelDataFormat::RGBA, PixelDataType::UBYTE),
+    );
+    Some(texture)
+}
+
+/// Loads a material texture into a filament texture with mipmaps. Color
+/// data (base color, emissive) is sampled as sRGB, non-color data
+/// (normal/metallic/roughness/AO) as linear. Returns `None` (part falls
+/// back to its flat parameters) when the reference can't be resolved or
+/// the image can't be decoded.
 unsafe fn load_material_texture(
     engine: &mut Engine,
     scene: &aiScene,
     path_str: &str,
     base_dir: Option<&Path>,
+    srgb: bool,
 ) -> Option<Texture> {
     let rgba = read_texture_rgba(scene, path_str, base_dir)?;
     let (width, height) = rgba.dimensions();
@@ -958,7 +1191,11 @@ unsafe fn load_material_texture(
         .height(height)
         .levels(levels)
         .sampler(SamplerType::SAMPLER_2D)
-        .format(TextureFormat::SRGB8_A8)
+        .format(if srgb {
+            TextureFormat::SRGB8_A8
+        } else {
+            TextureFormat::RGBA8
+        })
         .usage(TextureUsage::DEFAULT | TextureUsage::GEN_MIPMAPPABLE);
     let mut texture = texture_builder.build(engine)?;
 

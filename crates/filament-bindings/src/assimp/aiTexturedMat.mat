@@ -22,19 +22,55 @@ material {
             name : reflectance
         },
         {
+            type : float3,
+            name : emissiveFactor
+        },
+        {
             type : sampler2d,
             name : baseColorMap
+        },
+        {
+            type : sampler2d,
+            name : metallicMap
+        },
+        {
+            type : sampler2d,
+            name : roughnessMap
+        },
+        {
+            type : sampler2d,
+            name : normalMap
+        },
+        {
+            type : sampler2d,
+            name : emissiveMap
+        },
+        {
+            type : sampler2d,
+            name : aoMap
         }
     ],
 }
 
 fragment {
     void material(inout MaterialInputs material) {
+        // normal must be set before prepareMaterial; unused slots are bound
+        // to a 1x1 flat-normal dummy so this is safe unconditionally
+        material.normal = texture(materialParams_normalMap, getUV0()).xyz * 2.0 - 1.0;
         prepareMaterial(material);
         material.baseColor.rgb = materialParams.baseColor
                 * texture(materialParams_baseColorMap, getUV0()).rgb;
-        material.metallic = materialParams.metallic;
-        material.roughness = materialParams.roughness;
+        // metallic in .b / roughness in .g follows the glTF combined
+        // metallicRoughness layout; grayscale standalone maps read the same
+        material.metallic = materialParams.metallic
+                * texture(materialParams_metallicMap, getUV0()).b;
+        material.roughness = materialParams.roughness
+                * texture(materialParams_roughnessMap, getUV0()).g;
         material.reflectance = materialParams.reflectance;
+        material.ambientOcclusion = texture(materialParams_aoMap, getUV0()).r;
+        // w = 0: emissive not attenuated by camera exposure (the thumbnail
+        // camera's exposure would otherwise scale it to invisibility)
+        material.emissive = float4(materialParams.emissiveFactor
+                * texture(materialParams_emissiveMap, getUV0()).rgb, 0.0);
     }
 }

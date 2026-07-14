@@ -28,7 +28,7 @@ default = ["assimp"]
 # Controls only Filament's prebuilt binaries. Assimp is maintained and built
 # independently by the vendored russimp-sys-static crate.
 prebuilt = []
-assimp = ["russimp-sys-static"]
+assimp = ["russimp-sys-static", "image"]
 # Alembic (.abc) mesh reading, built independently by the vendored alembic-sys
 # crate (Imath + Alembic, Ogawa only).
 alembic = ["alembic-sys"]
@@ -38,6 +38,8 @@ bitflags = "1.3"
 num_enum = "0.5"
 half = "1.8"
 russimp-sys-static = { path = "../russimp-sys-static", default-features = false, optional = true }
+# decodes material textures for the assimp path (external files and embedded)
+image = { version = "0.24", default-features = false, features = ["png", "jpeg", "bmp", "tga", "tiff", "dds", "webp"], optional = true }
 alembic-sys = { path = "../alembic-sys", optional = true }
 
 [dev-dependencies]

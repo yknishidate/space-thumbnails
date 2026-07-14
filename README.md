@@ -8,12 +8,15 @@ Generates preview thumbnails for 3D model files. Provide a Windows Explorer exte
 
 - Wavefront Object (`.obj`)
 - FBX-Format, as ASCII and binary (`.fbx`)
+- Alembic (`.abc`)
 - Stereolithography (`.stl`)
 - Collada (`.dae`)
 - Stanford Polygon Library (`.ply`)
 - glTF2.0 (`.glb`/`.glTF`)
+- VRM avatars (`.vrm`, VRM 0.x and VRM 1.0)
 - Extensible 3D (`.x3d`/`.x3db`)
 - 3D Studio Max 3DS (`.3ds`)
+- MaterialX (`.mtlx`)
 
 ## Windows Explorer Extensions
 
@@ -110,6 +113,9 @@ This fork includes a few additional improvements:
 - Added thumbnail rendering support for Alembic (`.abc`) geometry caches.
   ![](https://github.com/user-attachments/assets/8dd6169a-ed35-42c4-af79-e7edaa842c1b)
 - Added PBR texture support for FBX, OBJ and other Assimp-based formats (external and embedded): base color, metallic, roughness, normal, emissive and ambient occlusion maps.
+- Added thumbnail support for VRM 0.x and VRM 1.0 avatars, preferring the
+  author-provided embedded thumbnail and falling back to 3D rendering.
+  ![](https://github.com/user-attachments/assets/d02f9665-0bf9-4ede-88eb-b05cfcc3a12a)
 - Fixed crashes when rendering glTF/GLB files.
 - Fixed rendering issues with some FBX files.
 - Fixed blank thumbnails for some DAE files.

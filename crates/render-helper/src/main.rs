@@ -1,5 +1,5 @@
 //! Isolated renderer process for all Filament-backed thumbnail formats
-//! (obj/fbx/stl/dae/ply/x3d/3ds/gltf/glb/abc).
+//! (obj/fbx/stl/dae/ply/x3d/3ds/gltf/glb/vrm/abc).
 //!
 //! The shell provider DLL is a thin in-process shim that forwards the file
 //! path here over a pipe; all parsing and GPU rendering happen in this
@@ -29,6 +29,8 @@ use std::{
 };
 
 use space_thumbnails::{LoadError, RendererBackend, SpaceThumbnailsRenderer};
+
+mod vrm_thumbnail;
 
 const SERVER_ARG: &str = "--server";
 const MAX_SIZE: u32 = 4096;
@@ -71,6 +73,10 @@ fn render(
     path: &str,
     size: u32,
 ) -> Result<Rendered, String> {
+    if let Some(pixels) = vrm_thumbnail::load(Path::new(path), size) {
+        return Ok(Rendered::Pixels(pixels));
+    }
+
     let renderer = renderers
         .entry(size)
         .or_insert_with(|| SpaceThumbnailsRenderer::new(RendererBackend::Vulkan, size, size));

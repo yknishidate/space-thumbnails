@@ -10,3 +10,5 @@ path = "src/main.rs"
 [dependencies]
 space-thumbnails = { path = "../core" }
 log = "0.4"
+serde_json = "1"
+image = { version = "0.24", default-features = false, features = ["jpeg", "png"] }

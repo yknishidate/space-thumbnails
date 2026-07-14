@@ -194,7 +194,7 @@ impl SpaceThumbnailsRenderer {
         filepath: impl AsRef<Path>,
     ) -> Result<&mut Self, LoadError> {
         let path = filepath.as_ref();
-        if matches!(path.extension(), Some(e) if e == "gltf" || e == "glb") {
+        if has_extension(path, &["gltf", "glb", "vrm"]) {
             let start = Instant::now();
             let data = fs::read(path).map_err(|_| LoadError::Failed)?;
             info!(
@@ -205,7 +205,7 @@ impl SpaceThumbnailsRenderer {
             );
             let name = path.file_name().ok_or(LoadError::Failed)?;
             self.load_gltf_asset(&data, name, Some(path))
-        } else if matches!(path.extension(), Some(e) if e == "abc") {
+        } else if has_extension(path, &["abc"]) {
             let start = Instant::now();
             let asset = AlembicAsset::from_file(&mut self.engine, path).map_err(|error| {
                 log::warn!(target: PERF_TARGET, "alembic import failed: {error}");
@@ -231,9 +231,9 @@ impl SpaceThumbnailsRenderer {
         filename: impl AsRef<OsStr>,
     ) -> Result<&mut Self, LoadError> {
         let name = Path::new(filename.as_ref());
-        if matches!(name.extension(), Some(e) if e == "gltf" || e == "glb") {
+        if has_extension(name, &["gltf", "glb", "vrm"]) {
             self.load_gltf_asset(buffer, filename.as_ref(), None)
-        } else if matches!(name.extension(), Some(e) if e == "abc") {
+        } else if has_extension(name, &["abc"]) {
             let start = Instant::now();
             let asset = AlembicAsset::from_memory(&mut self.engine, buffer).map_err(|error| {
                 log::warn!(target: PERF_TARGET, "alembic memory import failed: {error}");
@@ -363,7 +363,12 @@ impl SpaceThumbnailsRenderer {
         let start = Instant::now();
         self.destroy_opened_asset();
 
-        let binary = matches!(Path::new(filename).extension(), Some(e) if e == "glb");
+        let binary = has_extension(Path::new(filename), &["glb", "vrm"]);
+        let camera_z_direction = if gltf_is_vrm0(data, binary) {
+            -1.0
+        } else {
+            1.0
+        };
         let requires_jit_materials = gltf_has_non_opaque_sheen_material(data, binary);
 
         // Current Filament gltfio handles EXT_meshopt_compression directly.
@@ -482,7 +487,12 @@ impl SpaceThumbnailsRenderer {
 
             camera.set_exposure_physical(16.0, 1.0 / 125.0, 100.0);
 
-            setup_camera_surround_view(&mut camera, &aabb.transform(transform), &self.viewport);
+            setup_camera_surround_view_with_z(
+                &mut camera,
+                &aabb.transform(transform),
+                &self.viewport,
+                camera_z_direction,
+            );
 
             self.destroy_asset = Some(Box::new(move |_engine, scene| {
                 scene.remove_entities(asset.get_entities());
@@ -580,16 +590,53 @@ impl Drop for SpaceThumbnailsRenderer {
 }
 
 unsafe fn setup_camera_surround_view(camera: &mut Camera, aabb: &Aabb, viewport: &Viewport) {
+    setup_camera_surround_view_with_z(camera, aabb, viewport, 1.0);
+}
+
+unsafe fn setup_camera_surround_view_with_z(
+    camera: &mut Camera,
+    aabb: &Aabb,
+    viewport: &Viewport,
+    z_direction: f32,
+) {
     let aspect = viewport.width as f64 / viewport.height as f64;
     let half_extent = aabb.extent();
     camera.set_lens_projection(28.0, aspect, 0.01, f64::INFINITY);
     camera.look_at_up(
         &(aabb.center()
             + Float3::from(((half_extent[0] + half_extent[2]) / 2.0).max(half_extent[1]))
-                * Float3::from([2.5, 1.7, 2.5])),
+                * Float3::from([2.5, 1.7, 2.5 * z_direction])),
         &aabb.center(),
         &[0.0, 1.0, 0.0].into(),
     );
+}
+
+fn has_extension(path: &Path, expected: &[&str]) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .map(|extension| {
+            expected
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        })
+        .unwrap_or(false)
+}
+
+/// VRM 0.x avatars face -Z, while VRM 1.0 avatars face +Z. Generic glTF and
+/// VRM 1.0 retain the existing +Z-side camera placement.
+fn gltf_is_vrm0(data: &[u8], binary: bool) -> bool {
+    let json = if binary {
+        match extract_glb_json_chunk(data) {
+            Some(json) => json,
+            None => return false,
+        }
+    } else {
+        data
+    };
+    serde_json::from_slice::<serde_json::Value>(json)
+        .ok()
+        .map(|root| root.pointer("/extensions/VRM").is_some())
+        .unwrap_or(false)
 }
 
 fn fit_into_unit_cube(bounds: &Aabb) -> Mat4f {
@@ -797,7 +844,35 @@ mod test {
 
     use image::{ImageBuffer, ImageOutputFormat, Rgba};
 
-    use crate::{RendererBackend, SpaceThumbnailsRenderer};
+    use crate::{gltf_is_vrm0, has_extension, RendererBackend, SpaceThumbnailsRenderer};
+
+    #[test]
+    fn recognizes_vrm_and_case_insensitive_extensions() {
+        assert!(has_extension(
+            PathBuf::from("avatar.vrm").as_path(),
+            &["vrm"]
+        ));
+        assert!(has_extension(
+            PathBuf::from("avatar.VRM").as_path(),
+            &["vrm"]
+        ));
+        assert!(!has_extension(
+            PathBuf::from("avatar.vrma").as_path(),
+            &["vrm"]
+        ));
+    }
+
+    #[test]
+    fn detects_vrm0_for_camera_direction() {
+        assert!(gltf_is_vrm0(
+            br#"{"extensions":{"VRM":{"specVersion":"0.0"}}}"#,
+            false
+        ));
+        assert!(!gltf_is_vrm0(
+            br#"{"extensions":{"VRMC_vrm":{"specVersion":"1.0"}}}"#,
+            false
+        ));
+    }
 
     #[test]
     fn render_file_test() {

@@ -57,6 +57,10 @@ lazy_static! {
             ".glb",
         )),
         Box::new(ThumbnailFileProvider::new(
+            GUID::from_u128(0x4f0e2a9b_7a31_4b6e_9d5c_8f234a1c7b90),
+            ".vrm",
+        )),
+        Box::new(ThumbnailFileProvider::new(
             GUID::from_u128(0x0d5f2b71_9c3a_4e88_a6d4_1f7e2c9b4a60),
             ".abc",
         ))

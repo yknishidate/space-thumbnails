@@ -63,6 +63,54 @@ fn stage_mtlx_data(materialx_dir: &Path, staging_dir: &Path) {
     }
 }
 
+/// Locates the x64 VC++ redistributable CRT directory
+/// (`...\VC\Redist\MSVC\<version>\x64\Microsoft.VCxxx.CRT`) of the newest
+/// installed toolset. Honors `VCToolsRedistDir` (set in a VS developer
+/// prompt) first, then scans the standard Visual Studio install roots.
+fn find_vc_redist_crt_dir() -> PathBuf {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(dir) = env::var("VCToolsRedistDir") {
+        roots.push(PathBuf::from(dir));
+    }
+    for program_files in ["C:\\Program Files", "C:\\Program Files (x86)"] {
+        let vs_root = Path::new(program_files).join("Microsoft Visual Studio");
+        let Ok(years) = fs::read_dir(&vs_root) else {
+            continue;
+        };
+        for year in years.flatten() {
+            let Ok(editions) = fs::read_dir(year.path()) else {
+                continue;
+            };
+            for edition in editions.flatten() {
+                let msvc = edition.path().join("VC").join("Redist").join("MSVC");
+                let Ok(versions) = fs::read_dir(&msvc) else {
+                    continue;
+                };
+                let mut versions: Vec<_> = versions.flatten().map(|e| e.path()).collect();
+                versions.sort();
+                // newest toolset first
+                roots.extend(versions.into_iter().rev());
+            }
+        }
+    }
+
+    for root in roots {
+        let Ok(entries) = fs::read_dir(root.join("x64")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("Microsoft.VC") && name.ends_with(".CRT") {
+                return entry.path();
+            }
+        }
+    }
+    panic!(
+        "VC++ redistributable CRT directory not found; \
+         install the Visual Studio C++ workload or set VCToolsRedistDir"
+    );
+}
+
 /// Emits nested WiX `<Directory>`/`<Component>`/`<File>` elements for every
 /// file under `dir`, appending the generated component ids to `component_ids`
 /// (for `<ComponentRef>`s).
@@ -208,6 +256,43 @@ fn main() {
     ));
     wix.push_str("      </Component>\n");
 
+    // App-local VC++ runtime: the provider DLLs and helper exes link the CRT
+    // dynamically, and a clean Windows install has no VC redistributable.
+    // COM loads InProcServer32 DLLs with LOAD_WITH_ALTERED_SEARCH_PATH and
+    // the helpers resolve imports from their own directory, so CRT DLLs
+    // placed next to the binaries are found first.
+    let crt_dir = find_vc_redist_crt_dir();
+    let mut crt_files: Vec<PathBuf> = fs::read_dir(&crt_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .map_or(false, |ext| ext.eq_ignore_ascii_case("dll"))
+        })
+        .collect();
+    crt_files.sort();
+    assert!(
+        !crt_files.is_empty(),
+        "no CRT DLLs found in {}",
+        crt_dir.display()
+    );
+    let mut crt_component_ids = Vec::new();
+    for (index, file) in crt_files.iter().enumerate() {
+        let component_id = format!("VcCrt{}", index);
+        wix.push_str(&format!(
+            "      <Component Id=\"{}\" Guid=\"*\" Win64=\"yes\">\n",
+            component_id
+        ));
+        wix.push_str(&format!(
+            "        <File Id=\"VcCrtFile{}\" Source=\"{}\" KeyPath=\"yes\" Checksum=\"yes\"/>\n",
+            index,
+            file.to_str().unwrap()
+        ));
+        wix.push_str("      </Component>\n");
+        crt_component_ids.push(component_id);
+    }
+
     // --- Optional MaterialX (.mtlx) support -------------------------------
     // Separate provider DLL + statically linked helper renderer + the
     // MaterialX runtime data it needs, all grouped under one deselectable
@@ -290,6 +375,9 @@ fn main() {
     wix.push_str("    <Feature Id=\"MainFeature\" Title=\"Space Thumbnails\" Description=\"Thumbnails for 3D model files (obj, fbx, stl, dae, ply, x3d, 3ds, gltf, glb, abc).\" Level=\"1\" Absent=\"disallow\" AllowAdvertise=\"no\">\n");
     wix.push_str("      <ComponentRef Id=\"MainApplication\" />\n");
     wix.push_str("      <ComponentRef Id=\"RenderHelper\" />\n");
+    for component_id in &crt_component_ids {
+        wix.push_str(&format!("      <ComponentRef Id=\"{}\" />\n", component_id));
+    }
     wix.push_str("    </Feature>\n");
     wix.push_str("    <Feature Id=\"MaterialXFeature\" Title=\"MaterialX (.mtlx) thumbnails\" Description=\"Renders MaterialX material documents on a preview shader ball. Adds about 19 MB.\" Level=\"1\" Absent=\"allow\" AllowAdvertise=\"no\">\n");
     for component_id in &mtlx_component_ids {
@@ -315,7 +403,10 @@ fn main() {
         "    <WixVariable Id=\"WixUILicenseRtf\" Value=\"{}\" />\n",
         assets_dir.join("Licence.rtf").to_str().unwrap()
     ));
-    wix.push_str("    <MajorUpgrade AllowDowngrades=\"no\" AllowSameVersionUpgrades=\"no\" DowngradeErrorMessage=\"A newer version of [ProductName] is already installed.  If you are sure you want to downgrade, remove the existing installation via the Control Panel\" />\n");
+    // AllowSameVersionUpgrades: every build gets a fresh ProductCode
+    // (Product Id="*"), so without this a same-version rebuild installs
+    // side by side instead of replacing the previous one.
+    wix.push_str("    <MajorUpgrade AllowDowngrades=\"no\" AllowSameVersionUpgrades=\"yes\" DowngradeErrorMessage=\"A newer version of [ProductName] is already installed.  If you are sure you want to downgrade, remove the existing installation via the Control Panel\" />\n");
     wix.push_str("  </Product>\n");
     wix.push_str("</Wix>\n");
 
@@ -345,7 +436,9 @@ fn main() {
         .current_dir(&build_dir)
         .arg(build_dir.join("installer.wixobj"))
         .args(["-ext", "WixUIExtension"])
-        .args(["-ext", "WixUtilExtension"]);
+        .args(["-ext", "WixUtilExtension"])
+        // LGHT1076/ICE61: same-version upgrade detection is intentional
+        .arg("-sw1076");
 
     run_command(&mut light_command, "light.exe");
 

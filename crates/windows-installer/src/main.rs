@@ -201,6 +201,13 @@ fn main() {
         "    <Package InstallerVersion=\"300\" Compressed=\"yes\" InstallScope=\"perMachine\"/>\n",
     );
     wix.push_str("    <Media Id=\"1\" Cabinet=\"cab1.cab\" EmbedCab=\"yes\" />\n");
+
+    // Terminate the resident helper renderers before files are replaced or
+    // removed. They are stateless servers explorer respawns on demand, but
+    // unlike explorer.exe they are not Restart Manager-aware, so leaving
+    // them running would force a reboot to swap their files.
+    wix.push_str("    <util:CloseApplication Id=\"CloseRenderHelper\" Target=\"space-thumbnails-render-helper.exe\" TerminateProcess=\"0\" RebootPrompt=\"no\"/>\n");
+    wix.push_str("    <util:CloseApplication Id=\"CloseMtlxHelper\" Target=\"space-thumbnails-mtlx-helper.exe\" TerminateProcess=\"0\" RebootPrompt=\"no\"/>\n");
     wix.push_str("    <Directory Id=\"TARGETDIR\" Name=\"SourceDir\">\n");
     wix.push_str("      <Directory Id=\"ProgramFiles64Folder\">\n");
     wix.push_str(
@@ -422,6 +429,17 @@ fn main() {
         "    <WixVariable Id=\"WixUILicenseRtf\" Value=\"{}\" />\n",
         assets_dir.join("Licence.rtf").to_str().unwrap()
     ));
+    // Nudge the shell after install/upgrade (not plain uninstall: the DLL
+    // is already gone by this point there) so Explorer drops its
+    // association cache and starts asking the new providers without a
+    // logoff.
+    wix.push_str("    <CustomAction Id=\"NotifyShellAssocChanged\" FileKey=\"MainDLLFile\" DllEntry=\"MsiNotifyShellAssocChanged\" Execute=\"deferred\" Impersonate=\"yes\" Return=\"ignore\"/>\n");
+    wix.push_str("    <InstallExecuteSequence>\n");
+    wix.push_str(
+        "      <Custom Action=\"NotifyShellAssocChanged\" Before=\"InstallFinalize\">NOT (REMOVE=\"ALL\")</Custom>\n",
+    );
+    wix.push_str("    </InstallExecuteSequence>\n");
+
     // AllowSameVersionUpgrades: every build gets a fresh ProductCode
     // (Product Id="*"), so without this a same-version rebuild installs
     // side by side instead of replacing the previous one.

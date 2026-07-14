@@ -100,6 +100,19 @@ pub extern "stdcall" fn DllMain(
     true
 }
 
+/// MSI custom action (Type 17, run from the installed DLL after files and
+/// registry are in place): flushes the shell's association cache so
+/// Explorer starts asking the new providers without a logoff. Takes the
+/// MSIHANDLE of the running install; returns a Win32 error code — always
+/// success, a missed refresh must not fail the install.
+#[no_mangle]
+#[allow(non_snake_case)]
+#[doc(hidden)]
+pub extern "system" fn MsiNotifyShellAssocChanged(_install_handle: u32) -> u32 {
+    shell_change_notify();
+    0 // ERROR_SUCCESS
+}
+
 #[no_mangle]
 #[allow(non_snake_case)]
 #[doc(hidden)]

@@ -1,7 +1,7 @@
 use std::ptr;
 
 use crate::{
-    backend::{SamplerType, TextureFormat, TextureSwizzle, TextureUsage},
+    backend::{PixelBufferDescriptor, SamplerType, TextureFormat, TextureSwizzle, TextureUsage},
     bindgen,
 };
 
@@ -178,18 +178,27 @@ impl Texture {
         TextureFormat::from(bindgen::filament_Texture_getFormat(self.native()))
     }
 
-    #[cfg(any())]
+    /// Uploads a full 2D image to the given mip level (depth/z-offset fixed
+    /// at 1/0, matching a SAMPLER_2D texture).
     #[inline]
     pub unsafe fn set_image<T: 'static>(
         &mut self,
         engine: &mut Engine,
         level: usize,
+        width: u32,
+        height: u32,
         buffer: PixelBufferDescriptor<T>,
     ) -> &mut Self {
         bindgen::filament_Texture_setImage(
             self.native_mut(),
             engine.native_mut(),
             level,
+            0,
+            0,
+            0,
+            width,
+            height,
+            1,
             &mut buffer.into_native(),
         );
         self

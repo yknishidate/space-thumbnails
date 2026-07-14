@@ -1,17 +1,22 @@
 use core::fmt;
 use std::{
+    collections::HashMap,
     error::Error,
     ffi::{CStr, CString},
-    path::Path,
+    path::{Path, PathBuf},
     ptr,
 };
 
 use crate::{
-    backend::{BufferDescriptor, ElementType, PrimitiveType},
+    backend::{
+        BufferDescriptor, ElementType, PixelBufferDescriptor, PixelDataFormat, PixelDataType,
+        PrimitiveType, SamplerCompareFunc, SamplerCompareMode, SamplerMagFilter, SamplerMinFilter,
+        SamplerType, SamplerWrapMode, TextureFormat, TextureUsage,
+    },
     filament::{
         self, sRGBColor, Aabb, Bounds, Engine, IndexBuffer, IndexBufferBuilder, Material,
-        MaterialBuilder, MaterialInstance, RenderableBuilder, RgbaType, VertexAttribute,
-        VertexBuffer, VertexBufferBuilder,
+        MaterialBuilder, MaterialInstance, RenderableBuilder, RgbaType, Texture, TextureBuilder,
+        TextureSampler, VertexAttribute, VertexBuffer, VertexBufferBuilder,
     },
     math::{Float3, Float4, Half4, Mat3f, Mat4f, Short4, Ushort2},
     utils,
@@ -25,6 +30,10 @@ use super::helper::{
 
 const RESOURCES_AIDEFAULTMAT_DATA: &'static [u8] = include_bytes!("aiDefaultMat.filamat");
 const RESOURCES_AIDEFAULTTRANS_DATA: &'static [u8] = include_bytes!("aiDefaultTrans.filamat");
+// aiDefaultMat with a baseColorMap sampler multiplied into baseColor. Compiled
+// from aiTexturedMat.mat with the matc built alongside filament:
+//   matc --platform desktop --api all -o aiTexturedMat.filamat aiTexturedMat.mat
+const RESOURCES_AITEXTUREDMAT_DATA: &'static [u8] = include_bytes!("aiTexturedMat.filamat");
 
 const DEFAULT_FLAGS: u32 = post_process::GEN_SMOOTH_NORMALS
 | post_process::CALC_TANGENT_SPACE
@@ -50,6 +59,7 @@ pub struct AssimpAsset {
     renderables: Vec<utils::Entity>,
     materials: Vec<Material>,
     material_instances: Vec<MaterialInstance>,
+    textures: Vec<Texture>,
     vertex_buffer: VertexBuffer,
     index_buffer: IndexBuffer,
     aabb: Aabb,
@@ -88,6 +98,9 @@ struct AssimpMeshPart {
     roughness: f32,
     reflectance: f32,
     base_color: filament::sRGBColor,
+    // base color / diffuse texture reference as stored in the material
+    // (either an external file path or an embedded-texture name like "*0")
+    texture_path: Option<String>,
 }
 
 pub mod post_process {
@@ -187,6 +200,7 @@ impl AssimpAsset {
                 &ai_scene.read(),
                 default_color_material,
                 default_transparent_color_material,
+                None,
             )?;
 
             russimp_sys::aiReleaseImport(ai_scene);
@@ -229,6 +243,7 @@ impl AssimpAsset {
                 &ai_scene.read(),
                 default_color_material,
                 default_transparent_color_material,
+                filename.as_ref().parent(),
             )?;
 
             russimp_sys::aiReleaseImport(ai_scene);
@@ -241,6 +256,9 @@ impl AssimpAsset {
         scene: &aiScene,
         default_color_material: Material,
         default_transparent_color_material: Material,
+        // directory of the source model file, for resolving relative
+        // texture references (None when loaded from memory)
+        base_dir: Option<&Path>,
     ) -> Result<Self, E> {
         unsafe {
             let root_node = *scene.mRootNode;
@@ -329,9 +347,11 @@ impl AssimpAsset {
                     .normalized(VertexAttribute::TANGENTS, true);
 
                 if snorm_uv0 {
+                    // snorm16-packed UVs must be normalized back to [-1, 1]
+                    // (matches convert_uv's pack_snorm16 and the UV1 setup)
                     vertex_buffer_builder
                         .attribute(VertexAttribute::UV0, 2, ElementType::SHORT2, 0, 0)
-                        .normalized(VertexAttribute::UV0, false);
+                        .normalized(VertexAttribute::UV0, true);
                 } else {
                     vertex_buffer_builder.attribute(
                         VertexAttribute::UV0,
@@ -392,6 +412,25 @@ impl AssimpAsset {
 
             let mut material_instances: Vec<MaterialInstance> = Vec::with_capacity(meshes.len());
 
+            // Base color textures, deduplicated by their material path. The
+            // textured material variant is only built when a texture loads.
+            let mut textures: Vec<Texture> = Vec::new();
+            let mut texture_cache: HashMap<String, Option<usize>> = HashMap::new();
+            let mut textured_material: Option<Material> = None;
+            let texture_sampler = TextureSampler::new(
+                SamplerMagFilter::LINEAR,
+                SamplerMinFilter::LINEAR_MIPMAP_LINEAR,
+                SamplerWrapMode::REPEAT,
+                SamplerWrapMode::REPEAT,
+                SamplerWrapMode::REPEAT,
+                3,
+                SamplerCompareMode::NONE,
+                0,
+                SamplerCompareFunc::LE,
+                0,
+                0,
+            );
+
             for (mesh_index, mesh) in meshes.iter().enumerate() {
                 let mut builder =
                     RenderableBuilder::new(mesh.parts.len()).ok_or(E::InternalError)?;
@@ -412,6 +451,24 @@ impl AssimpAsset {
                         part.indices_count,
                     );
 
+                    // Resolve the part's base color texture (opaque parts
+                    // only; the transparent material has no sampler).
+                    let mut part_texture: Option<usize> = None;
+                    if part.opacity >= 1.0 {
+                        if let Some(path) = &part.texture_path {
+                            part_texture = *texture_cache
+                                .entry(path.clone())
+                                .or_insert_with(|| {
+                                    load_material_texture(engine, scene, path, base_dir).map(
+                                        |texture| {
+                                            textures.push(texture);
+                                            textures.len() - 1
+                                        },
+                                    )
+                                });
+                        }
+                    }
+
                     let mut color_material;
                     if part.opacity < 1.0 {
                         color_material = default_transparent_color_material
@@ -428,6 +485,43 @@ impl AssimpAsset {
                                     part.opacity,
                                 ),
                             )
+                            .ok()
+                            .ok_or(E::InvalidString)?;
+                    } else if let Some(texture_index) = part_texture {
+                        if textured_material.is_none() {
+                            let mut material_builder =
+                                MaterialBuilder::new().ok_or(E::InternalError)?;
+                            material_builder.package(RESOURCES_AITEXTUREDMAT_DATA);
+                            textured_material =
+                                Some(material_builder.build(engine).ok_or(E::InternalError)?);
+                        }
+                        color_material = textured_material
+                            .as_ref()
+                            .unwrap()
+                            .create_instance()
+                            .ok_or(E::InternalError)?;
+                        // The material color multiplies the texture; a black
+                        // color would erase it (some exporters zero the
+                        // diffuse color when a texture is present).
+                        let tint = if part.base_color.0.vec.iter().all(|c| *c < 0.05) {
+                            Float3::new(1.0, 1.0, 1.0)
+                        } else {
+                            part.base_color.0
+                        };
+                        color_material
+                            .set_rgb_parameter("baseColor", filament::RgbType::sRGB, tint)
+                            .ok()
+                            .ok_or(E::InvalidString)?;
+                        color_material
+                            .set_texture_parameter(
+                                "baseColorMap",
+                                &textures[texture_index],
+                                &texture_sampler,
+                            )
+                            .ok()
+                            .ok_or(E::InvalidString)?;
+                        color_material
+                            .set_float_parameter("reflectance", &part.reflectance)
                             .ok()
                             .ok_or(E::InvalidString)?;
                     } else {
@@ -506,10 +600,16 @@ impl AssimpAsset {
                 None
             };
 
+            let mut materials = vec![default_color_material, default_transparent_color_material];
+            if let Some(material) = textured_material {
+                materials.push(material);
+            }
+
             Ok(AssimpAsset {
                 renderables,
-                materials: vec![default_color_material, default_transparent_color_material],
+                materials,
                 material_instances,
+                textures,
                 vertex_buffer,
                 index_buffer,
                 root_entity,
@@ -552,6 +652,10 @@ impl AssimpAsset {
 
             for material_instance in self.material_instances.iter_mut() {
                 engine.destroy_material_instance(material_instance);
+            }
+
+            for texture in self.textures.iter_mut() {
+                engine.destroy_texture(texture);
             }
 
             for material in self.materials.iter_mut() {
@@ -745,9 +849,40 @@ unsafe fn process_node(
                         metallic = 1.0;
                         base_color = sRGBColor([color.r, color.g, color.b].into());
                     } else {
-                        // the conversion formula is correct?
-                        reflectance = (color.r / 0.16).sqrt();
+                        // filament expects reflectance in [0, 1] (f0 = 0.16 * r^2);
+                        // Phong specular colors near 1.0 would otherwise blow out
+                        // the fresnel and wash the whole surface to white
+                        reflectance = (color.r / 0.16).sqrt().min(1.0);
                     }
+                }
+            }
+
+            let mut texture_path: Option<String> = None;
+            for texture_type in [
+                russimp_sys::aiTextureType_aiTextureType_BASE_COLOR,
+                russimp_sys::aiTextureType_aiTextureType_DIFFUSE,
+            ] {
+                let mut ai_path: russimp_sys::aiString = core::mem::zeroed();
+                if russimp_sys::aiGetMaterialTexture(
+                    &material,
+                    texture_type,
+                    0,
+                    &mut ai_path,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                ) == russimp_sys::aiReturn_aiReturn_SUCCESS
+                    && ai_path.length > 0
+                {
+                    let bytes: Vec<u8> = ai_path.data[..ai_path.length as usize]
+                        .iter()
+                        .map(|&c| c as u8)
+                        .collect();
+                    texture_path = Some(String::from_utf8_lossy(&bytes).into_owned());
+                    break;
                 }
             }
 
@@ -759,6 +894,7 @@ unsafe fn process_node(
                 roughness,
                 metallic,
                 reflectance,
+                texture_path,
             });
         }
     }
@@ -798,6 +934,104 @@ unsafe fn process_node(
             );
         }
     }
+}
+
+/// Loads a material's base color texture into a filament texture with
+/// mipmaps. Returns `None` (part falls back to its flat color) when the
+/// reference can't be resolved or the image can't be decoded.
+unsafe fn load_material_texture(
+    engine: &mut Engine,
+    scene: &aiScene,
+    path_str: &str,
+    base_dir: Option<&Path>,
+) -> Option<Texture> {
+    let rgba = read_texture_rgba(scene, path_str, base_dir)?;
+    let (width, height) = rgba.dimensions();
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let levels = (32 - width.max(height).leading_zeros()) as u8;
+    let mut texture_builder = TextureBuilder::new()?;
+    texture_builder
+        .width(width)
+        .height(height)
+        .levels(levels)
+        .sampler(SamplerType::SAMPLER_2D)
+        .format(TextureFormat::SRGB8_A8)
+        .usage(TextureUsage::DEFAULT | TextureUsage::GEN_MIPMAPPABLE);
+    let mut texture = texture_builder.build(engine)?;
+
+    texture.set_image(
+        engine,
+        0,
+        width,
+        height,
+        PixelBufferDescriptor::new(rgba.into_raw(), PixelDataFormat::RGBA, PixelDataType::UBYTE),
+    );
+    if levels > 1 {
+        texture.generate_mipmaps(engine);
+    }
+    Some(texture)
+}
+
+/// Decodes a texture reference to RGBA8 pixels, checking embedded textures
+/// first (both "*<index>" references and by-name matches), then external
+/// files. Rows are kept top-first: filament maps the first uploaded row to
+/// v=1, which matches assimp's bottom-left UV origin (verified empirically
+/// with an asymmetric texture on the Vulkan backend).
+unsafe fn read_texture_rgba(
+    scene: &aiScene,
+    path_str: &str,
+    base_dir: Option<&Path>,
+) -> Option<image::RgbaImage> {
+    let c_path = CString::new(path_str).ok()?;
+    let embedded = russimp_sys::aiGetEmbeddedTexture(scene, c_path.as_ptr());
+    let rgba = if !embedded.is_null() {
+        let texture = embedded.read();
+        if texture.mHeight == 0 {
+            // compressed image (png/jpg/...); mWidth is the byte length
+            let bytes =
+                core::slice::from_raw_parts(texture.pcData as *const u8, texture.mWidth as usize);
+            image::load_from_memory(bytes).ok()?.to_rgba8()
+        } else {
+            let texels = core::slice::from_raw_parts(
+                texture.pcData,
+                texture.mWidth as usize * texture.mHeight as usize,
+            );
+            let mut data = Vec::with_capacity(texels.len() * 4);
+            for texel in texels {
+                data.extend_from_slice(&[texel.r, texel.g, texel.b, texel.a]);
+            }
+            image::RgbaImage::from_raw(texture.mWidth, texture.mHeight, data)?
+        }
+    } else {
+        image::open(resolve_texture_file(path_str, base_dir)?)
+            .ok()?
+            .to_rgba8()
+    };
+
+    Some(rgba)
+}
+
+/// Resolves an external texture reference against the model's directory:
+/// absolute paths as-is, then relative to the model, then by bare file name
+/// next to the model (textures are often moved alongside it).
+fn resolve_texture_file(path_str: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
+    let normalized = path_str.replace('\\', "/");
+    let path = Path::new(&normalized);
+    if path.is_absolute() && path.is_file() {
+        return Some(path.to_path_buf());
+    }
+
+    let base_dir = base_dir?;
+    let candidate = base_dir.join(path);
+    if candidate.is_file() {
+        return Some(candidate);
+    }
+
+    let candidate = base_dir.join(path.file_name()?);
+    candidate.is_file().then(|| candidate)
 }
 
 #[derive(Debug, Clone)]

@@ -169,6 +169,9 @@ bitflags! {
         const UPLOADABLE = bindgen::filament_backend_TextureUsage_UPLOADABLE;
         const SAMPLEABLE = bindgen::filament_backend_TextureUsage_SAMPLEABLE;
         const SUBPASS_INPUT = bindgen::filament_backend_TextureUsage_SUBPASS_INPUT;
+        const BLIT_SRC = bindgen::filament_backend_TextureUsage_BLIT_SRC;
+        const BLIT_DST = bindgen::filament_backend_TextureUsage_BLIT_DST;
+        const GEN_MIPMAPPABLE = bindgen::filament_backend_TextureUsage_GEN_MIPMAPPABLE;
         const DEFAULT = bindgen::filament_backend_TextureUsage_DEFAULT;
     }
 }

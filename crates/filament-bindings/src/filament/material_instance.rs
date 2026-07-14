@@ -6,7 +6,7 @@ use crate::{
     math::{self, Float3, Float4},
 };
 
-use super::{Material, RgbType, RgbaType, TransparencyMode};
+use super::{Material, RgbType, RgbaType, Texture, TextureSampler, TransparencyMode};
 
 macro_rules! impl_set_parameter_method {
     ($t:ident, $helper:ident, $value_type:ty) => {
@@ -184,7 +184,6 @@ impl MaterialInstance {
         math::Mat3f
     );
 
-    #[cfg(any())]
     #[inline]
     pub unsafe fn set_texture_parameter(
         &mut self,
@@ -192,11 +191,13 @@ impl MaterialInstance {
         texture: &Texture,
         sampler: &TextureSampler,
     ) -> Result<&mut Self, ffi::NulError> {
-        let c_name = ffi::CString::new(name.as_ref())?;
+        let name = name.as_ref();
+        let c_name = ffi::CString::new(name)?;
 
         bindgen::filament_MaterialInstance_setParameter(
             self.native_mut(),
             c_name.as_ptr(),
+            name.len(),
             texture.native(),
             sampler.native(),
         );

@@ -162,6 +162,25 @@ fn main() {
         .unwrap()
         .to_owned();
 
+    // Build every binary the MSI packages, so it can never pick up stale
+    // artifacts from target\release (CARGO points back at the cargo that
+    // launched us).
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let mut build_command = Command::new(cargo);
+    build_command.current_dir(&project_dir).args([
+        "build",
+        "--release",
+        "-p",
+        "space-thumbnails-windows-dll",
+        "-p",
+        "space-thumbnails-render-helper",
+        "-p",
+        "space-thumbnails-mtlx-dll",
+        "-p",
+        "space-thumbnails-mtlx-helper",
+    ]);
+    run_command(&mut build_command, "cargo");
+
     let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
     let out_dir = project_dir.join("target").join("installer");
     let download_dir = out_dir.join("download");

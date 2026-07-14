@@ -438,12 +438,29 @@ fn main() {
     wix.push_str(
         "      <Custom Action=\"NotifyShellAssocChanged\" Before=\"InstallFinalize\">NOT (REMOVE=\"ALL\")</Custom>\n",
     );
+    // Reschedule the helper-process kill (default: right before
+    // InstallFiles, 3999) to right after InstallInitialize, so it runs
+    // before RemoveFiles (3500) on uninstall and before everything that
+    // touches the helper exes on install/upgrade. The extension marks its
+    // own scheduling Overridable="yes" for exactly this.
+    wix.push_str(
+        "      <Custom Action=\"WixCloseApplications\" After=\"InstallInitialize\">VersionNT &gt; 400</Custom>\n",
+    );
     wix.push_str("    </InstallExecuteSequence>\n");
 
     // AllowSameVersionUpgrades: every build gets a fresh ProductCode
     // (Product Id="*"), so without this a same-version rebuild installs
     // side by side instead of replacing the previous one.
-    wix.push_str("    <MajorUpgrade AllowDowngrades=\"no\" AllowSameVersionUpgrades=\"yes\" DowngradeErrorMessage=\"A newer version of [ProductName] is already installed.  If you are sure you want to downgrade, remove the existing installation via the Control Panel\" />\n");
+    //
+    // Schedule=afterInstallExecute: with the default (afterInstallValidate)
+    // the OLD product's file removal runs before WixCloseApplications can
+    // kill the resident helpers, so upgrades hit files-in-use and demand a
+    // reboot. Late scheduling installs the new files first (helpers already
+    // killed, explorer handled by Restart Manager) and removes the old
+    // product afterwards; shared components survive via refcounting (their
+    // GUIDs are stable: fixed for the main components, path-derived for the
+    // auto-generated ones).
+    wix.push_str("    <MajorUpgrade AllowDowngrades=\"no\" AllowSameVersionUpgrades=\"yes\" Schedule=\"afterInstallExecute\" DowngradeErrorMessage=\"A newer version of [ProductName] is already installed.  If you are sure you want to downgrade, remove the existing installation via the Control Panel\" />\n");
     wix.push_str("  </Product>\n");
     wix.push_str("</Wix>\n");
 

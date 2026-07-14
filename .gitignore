@@ -1,5 +1,6 @@
 target
 deploy
 *.ps1
+*.py
 .DS_Store
 test_results

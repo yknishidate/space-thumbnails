@@ -27,12 +27,12 @@ const ROUGHNESS: f32 = 0.6;
 const REFLECTANCE: f32 = 0.5;
 
 /// Classifies a bridge read error. An archive that opens cleanly but holds no
-/// renderable polygon mesh (e.g. a locator/transform-only scene) reports "no
-/// polymesh geometry found" — that is an *empty* model, not a corrupt file, so
-/// callers can show a neutral "no preview" thumbnail rather than a broken-file
-/// one. Anything else is a genuine load failure.
+/// renderable geometry (e.g. a locator/transform-only scene) reports "no
+/// renderable geometry found" — that is an *empty* model, not a corrupt file,
+/// so callers can show a neutral "no preview" thumbnail rather than a
+/// broken-file one. Anything else is a genuine load failure.
 fn map_read_error(message: String) -> AlembicAssetError {
-    if message.contains("no polymesh") {
+    if message.contains("no renderable geometry") {
         E::EmptyModel
     } else {
         E::FailedLoadModel(message)

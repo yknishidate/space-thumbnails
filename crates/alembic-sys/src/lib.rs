@@ -1,8 +1,10 @@
 //! Minimal safe wrapper over the static Alembic mesh-reading bridge.
 //!
-//! Reads the first time-sample of every polymesh in an `.abc` archive, merged
-//! into one position/index buffer (world-space, triangulated). Normals, UVs,
-//! materials and animation are dropped — callers render a plain gray mesh.
+//! Reads the first time-sample of every polymesh, point cloud and curve set
+//! in an `.abc` archive, merged into one position/index buffer (world-space,
+//! triangulated; points become small octahedra, curve segments thin prisms).
+//! Normals, UVs, materials and animation are dropped — callers render a
+//! plain gray mesh.
 
 use std::{
     ffi::c_char,

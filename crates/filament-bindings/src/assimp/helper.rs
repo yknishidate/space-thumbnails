@@ -14,6 +14,11 @@ pub unsafe fn count_vertices(
         let mesh = scene.mMeshes.add(mesh_index).read().read();
         total_vertex_count += mesh.mNumVertices as usize;
 
+        // meshes can have vertices but no faces (e.g. point-only OBJ files);
+        // mFaces is null then and must not be dereferenced
+        if mesh.mNumFaces == 0 || mesh.mFaces.is_null() {
+            continue;
+        }
         let first_face = mesh.mFaces.read();
         let num_faces = mesh.mNumFaces;
         total_index_count += num_faces as usize * first_face.mNumIndices as usize;

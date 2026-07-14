@@ -7,7 +7,7 @@ const PERF_TARGET: &'static str = "SpaceThumbnailsPerf";
 
 use filament_bindings::{
     alembic::{AlembicAsset, AlembicAssetError},
-    assimp::{post_process, AssimpAsset},
+    assimp::{post_process, AssimpAsset, AssimpAssetError},
     backend::{Backend, PixelBufferDescriptor, PixelDataFormat, PixelDataType},
     filament::{
         self, sRGBColor, Aabb, Camera, ClearOptions, Engine, IndirectLight, IndirectLightBuilder,
@@ -53,6 +53,13 @@ pub enum LoadError {
 fn alembic_load_error(error: &AlembicAssetError) -> LoadError {
     match error {
         AlembicAssetError::EmptyModel => LoadError::NoGeometry,
+        _ => LoadError::Failed,
+    }
+}
+
+fn assimp_load_error(error: &AssimpAssetError) -> LoadError {
+    match error {
+        AssimpAssetError::EmptyModel { .. } => LoadError::NoGeometry,
         _ => LoadError::Failed,
     }
 }
@@ -211,7 +218,7 @@ impl SpaceThumbnailsRenderer {
             let asset = AssimpAsset::from_file_with_flags(&mut self.engine, path, ASSIMP_FLAGS)
                 .map_err(|error| {
                     log::warn!(target: PERF_TARGET, "assimp import failed: {error}");
-                    LoadError::Failed
+                    assimp_load_error(&error)
                 })?;
             info!(target: PERF_TARGET, "assimp import from file: {:.2?}", start.elapsed());
             self.load_assimp_asset(asset).ok_or(LoadError::Failed)
@@ -248,7 +255,7 @@ impl SpaceThumbnailsRenderer {
             )
             .map_err(|error| {
                 log::warn!(target: PERF_TARGET, "assimp memory import failed ({format_hint}): {error}");
-                LoadError::Failed
+                assimp_load_error(&error)
             })?;
             info!(target: PERF_TARGET, "assimp import from memory: {:.2?}", start.elapsed());
             self.load_assimp_asset(asset).ok_or(LoadError::Failed)
